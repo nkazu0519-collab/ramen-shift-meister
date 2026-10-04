@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <base target="_top">
+    <?!= HtmlService.createHtmlOutputFromFile('css').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_home_common').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_shift').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_shift_wish').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_judge').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_home_controller').getContent(); ?>
+  </head>
+  <body>
+    <div class="app-shell">
+    <?!= renderAppSidebar_('home'); ?>
+    <div class="page-container">
+    <header class="app-header">
+      <span class="app-header__eyebrow">freee連携</span>
+      <h1 class="app-header__title">営業日別シフト体制チェック</h1>
+      <p class="app-header__description">シフトの登録から体制・休憩候補の確認まで、この画面で行います。</p>
+      <p class="app-header__company">事業所名称: <span class="app-header__company-name"><?= getCompanyName(); ?></span></p>
+    </header>
+
+    <?
+      // 従業員一覧はこのページ内で複数回使うため、ここで1回だけ取得する
+      var employees = getEmployees();
+    ?>
+    <script>
+      // サーバーで取得済みの従業員一覧をそのままクライアント側でも使う（時間軸の行順・再取得なしのため）
+      var employees = <?!= JSON.stringify(employees) ?>;
+    </script>
+
+    <?
+      // マイスター概要（取得マイスター情報）もこのページ内で使うため、ここで1回だけ取得する
+      var maisterSummaries = getAllMaisterSummaries();
+    ?>
+    <script>
+      // サーバーで取得済みのマイスター概要をそのままクライアント側でも使う
+      // （シフト登録フォームで従業員を選ぶたびにgoogle.script.runで通信しないため）
+      var maisterSummaries = <?!= JSON.stringify(maisterSummaries) ?>;
+    </script>
+
+    <div class="card card--feature">
+      <h3>営業日のシフト体制</h3>
+      <!-- カード上部を左右2カラムのラッパーでまとめ、対象日の操作（右側）とシフトの判定・登録操作
+           （左側）を同じ場所で見られるようにする（レビュー対応：以前は上部の独立カードに日付操作が
+           あり、シフト登録のたびに画面を往復する必要があった）。十分な横幅では横並び、
+           足りない場合は縦積みに自然に折り返す（.shift-card-top、CSS側で制御）。
+           DOM順は表示指示どおり「日付操作(.shift-card-top__nav)→判定・登録操作(.shift-card-top__actions)」
+           にしている（レビュー対応：以前はcolumn-reverseでDOM順と視覚順を逆転させていたため、
+           狭い画面でTabキーが見た目と逆順に移動する分かりにくさがあった。DOM順を表示順に
+           一致させ、広い画面での「左actions・右nav」はCSSのorderプロパティだけで実現する） -->
+      <div class="shift-card-top">
+        <!-- 上部の独立した日付カード（旧.card.nav-card）を撤去し、中身をそのままここへ移動した。
+             IDとonclickハンドラは変更していない（前日・翌日・日付指定・今日へ戻るの動作、
+             日付変更に伴う希望・勤務・営業日区分の再取得はjs_home_controller.html側のまま） -->
+        <div class="nav-card shift-card-top__nav">
+          <div class="nav-primary">
+            <button type="button" class="nav-btn" onclick="goToPreviousDay()" aria-label="前日" title="前日">←</button>
+            <div class="nav-date">
+              <span id="business_date_label" class="nav-date__label"></span>
+            </div>
+            <button type="button" class="nav-btn" onclick="goToNextDay()" aria-label="翌日" title="翌日">→</button>
+          </div>
+          <div class="nav-secondary">
+            <label class="nav-field">
+              <span class="nav-field__label">日付を選択</span>
+              <input type="date" id="business_date_input" onchange="handleBusinessDateInputChange(this)">
+            </label>
+            <div class="nav-field">
+              <span id="business_day_type_display" class="nav-field__value" aria-live="polite"></span>
+            </div>
+            <button type="button" class="nav-btn-small" onclick="goToToday()">今日へ戻る</button>
+          </div>
+        </div>
+
+        <div class="shift-card-top__actions">
+          <!-- 判定操作専用の横並びラッパー（既存のbtn-frameはcolumn方向のため、他画面へ影響させずに
+               横並びにするための修飾クラス）。「この日のシフトを判定」「判定結果を見る」「要約」の順に並べ、
+               狭い画面ではflex-wrapで自然に折り返す -->
+          <div class="judge-action-row">
+            <button type="button" class="btn" id="judge_btn" onclick="handleJudgeClick()" disabled>この日のシフトを判定</button>
+            <!-- 「判定結果を見る」ボタン（仮説検証用の最小実装）。
+                 判定成功後だけ表示し、判定前・判定中・通信失敗・サーバーエラー・日付変更・
+                 シフト登録変更削除の後はresetJudgeFilterState_により非表示に戻す（前回結果を開けなくする） -->
+            <button type="button" id="judge_open_detail_btn" class="btn-secondary" onclick="handleOpenJudgeDetailClick_(event)" hidden>判定結果を見る</button>
+            <!-- 判定結果の要約。判定成功後だけ表示し、判定前・判定中・通信失敗・サーバーエラー・
+                 日付変更・シフト登録変更削除の後はresetJudgeFilterState_により非表示に戻す -->
+            <div id="judge_summary" class="note judge-summary" hidden></div>
+          </div>
+          <div id="judge_message" class="note"></div>
+          <!-- 希望シフトのバーから勤務を登録する操作を主導線にする（従業員が「希望シフト提出」
+               画面から提出した希望のみを扱う。店主側の希望追加は撤去した＝店主希望導線整理
+               2026-09-24。希望のない勤務を直接登録したい場合は「直接シフトを登録」から利用できる） -->
+          <div class="judge-action-row shift-action-row">
+            <button type="button" class="btn-secondary" id="shift_direct_add_btn" onclick="openShiftDirectAddModal_()" disabled>直接シフトを登録</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="timeline_message" class="note"></div>
+      <p class="note">薄いバーは未登録の希望シフトです。押すと勤務を登録できます。濃いバーは勤務シフトで、押すと変更・削除できます。表内のスクロールで7人目以降も確認できます。</p>
+      <!-- レビュー対応（縦横スクロールを単一コンテナへ統合 2026-09-16）：以前は横スクロール用の
+           .timeline-scrollと縦スクロール用の.timeline-body-scrollを別々に持たせていたが、
+           氏名列（position:sticky; left:0）の基準が内側の.timeline-body-scrollになってしまい、
+           外側を横スクロールしても氏名列が可視領域の左端に固定されない問題があった。また
+           縦スクロールバーの有無で従業員行の実効幅が見出し・判定行とずれ、時間軸の位置が
+           合わなくなる問題もあった。.timeline-scroll1つに縦横両方のoverflow: autoを持たせ、
+           見出し行・判定行はtop方向、氏名列はleft方向のposition:stickyで固定する
+           （CSS側でも同じ理由をコメントしている） -->
+      <div class="timeline-scroll">
+        <div class="timeline-table">
+          <div class="timeline-row timeline-header">
+            <div class="timeline-name">スタッフ</div>
+            <div class="timeline-track" id="timeline_header_track"></div>
+          </div>
+          <div class="timeline-row timeline-judge-row">
+            <div class="timeline-name">判定</div>
+            <div class="timeline-track" id="timeline_judge_track"></div>
+          </div>
+          <div id="timeline_body"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>休憩確保の候補</h3>
+      <p class="note">6時間以上勤務する従業員が、一人ずつ連続休憩を取っても人数・持ち場を維持できる候補があるかを確認します。休憩の取得や安定営業を保証するものではなく、当日の判断材料です。</p>
+      <div id="break_summary_message" class="note"></div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>対象者</th>
+              <th>勤務時間</th>
+              <th>必要休憩</th>
+              <th>状態</th>
+              <th class="break-detail-column">候補・注意</th>
+            </tr>
+          </thead>
+          <tbody id="break_result_body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    </div>
+    </div>
+
+    <!-- レビュー対応（変更・削除モーダルの縦長化 2026-09-16）：従業員名横のマイスターラベル追加や
+         詳細展開により本文が伸びると、下部の変更・削除・キャンセルが画面からはみ出す可能性が
+         あった。直接シフト登録モーダルと同じ.modal--form-scroll（見出し＋本文スクロール＋
+         常に見える操作領域の3段構成）を、<form>を持たないこのモーダルにもそのまま適用する -->
+    <div id="shift_edit_modal" class="modal-overlay" hidden onclick="handleShiftEditOverlayClick_(event)">
+      <div class="modal modal--form-scroll" role="dialog" aria-modal="true" aria-labelledby="shift_edit_modal_title">
+        <h3 id="shift_edit_modal_title">シフトの変更・削除</h3>
+        <div class="modal-body-scroll">
+          <!-- レビュー対応（従業員名の下へマイスターラベルを配置 2026-09-21）：以前は氏名と
+               同じ行にラベル列を並べ、幅を奪い合って氏名が不自然に改行される問題があった。
+               氏名は通常の.modal-field（ラベル＋値のみ）に戻し、マイスターラベルは氏名の下の
+               別行（shift_edit_modal_skill_wrap）へ移す。ラベル行は、収まる分だけラベルを並べ、
+               収まらない分は「＋N件」ボタン（shift_edit_skill_more_btn）で開閉する
+               （renderShiftEditSkillTags_）。展開時は別行を新設せず、同じラベル列
+               （shift_edit_modal_skill_tags）へ隠れていた分を追加して1回だけ表示し、折り返す
+               （js_shift.htmlのtoggleShiftEditSkillDetail_・css.htmlの.skill-tag-list--expanded・
+               .modal-field--skill-row-expanded参照）。マイスター情報がない場合はこの行自体を
+               hidden属性で消し、不要な空行を残さない（clearSkillTags_・
+               recalculateSkillInlineVisibility_側で制御）。aria-controlsは展開対象であるラベル列
+               自身を指す -->
+          <p class="modal-field"><span class="modal-field__label">従業員</span><span id="shift_edit_modal_employee" class="modal-field__value"></span></p>
+          <p class="modal-field modal-field--skill-row" id="shift_edit_modal_skill_wrap" hidden>
+            <span id="shift_edit_modal_skill_tags" class="skill-tag-list skill-tag-list--inline"></span>
+            <button type="button" id="shift_edit_skill_more_btn" class="skill-tag-more-btn" aria-expanded="false" aria-controls="shift_edit_modal_skill_tags" onclick="toggleShiftEditSkillDetail_()" hidden></button>
+          </p>
+          <p class="modal-field"><span class="modal-field__label">対象日</span><span id="shift_edit_modal_date" class="modal-field__value"></span></p>
+          <!-- 希望シフトから登録した勤務の場合だけ、元の希望時間を参考表示する（希望なしの従来勤務では非表示のまま） -->
+          <p class="modal-field" id="shift_edit_modal_wish_field" hidden><span class="modal-field__label">元の希望時間</span><span id="shift_edit_modal_wish_range" class="modal-field__value"></span></p>
+          <div class="form-grid">
+            <div class="form-field">
+              <label class="form-label" for="shift_edit_start_time">開始時刻</label>
+              <input type="time" id="shift_edit_start_time" step="3600">
+            </div>
+            <div class="form-field">
+              <label class="form-label" for="shift_edit_end_time">終了時刻</label>
+              <input type="time" id="shift_edit_end_time" step="3600">
+            </div>
+          </div>
+          <p class="form-help">開始・終了は毎時0分（1時間単位）で入力してください。</p>
+          <div id="shift_edit_modal_message" class="message-area"></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="shift_edit_save_btn" class="btn" onclick="handleShiftEditSave_()">変更を保存</button>
+          <button type="button" id="shift_edit_delete_btn" class="btn-danger" onclick="handleShiftEditDelete_()">削除</button>
+          <button type="button" id="shift_edit_cancel_btn" class="btn-secondary" onclick="closeShiftEditModal_()">キャンセル</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 「直接シフトを登録」モーダル。希望のない勤務を店主が直接登録する既存機能を、
+         常設フォームからモーダルへ移した（導線は控えめな二次ボタンのまま維持する）。
+         レビュー対応（マイスター詳細の折りたたみ 2026-09-16）：従業員選択後にマイスター情報
+         （employee_skill_card）が展開されると縦長になり、下部の登録ボタンが見えづらくなる
+         問題があった。.modal--form-scrollを重ね、モーダル自体を「見出し＋本文スクロール＋
+         常に見える操作領域」の3段構成にする。本文（.modal-body-scroll）だけがスクロールし、
+         .modal-actions（登録・キャンセル）は常に画面内に残る -->
+    <div id="shift_direct_add_modal" class="modal-overlay" hidden onclick="handleShiftDirectAddOverlayClick_(event)">
+      <div class="modal modal--form-scroll" role="dialog" aria-modal="true" aria-labelledby="shift_direct_add_modal_title">
+        <h3 id="shift_direct_add_modal_title">直接シフトを登録</h3>
+        <form id="shiftForm" onsubmit="return handleShiftFormSubmit(this)">
+          <div class="modal-body-scroll">
+            <div class="form-grid">
+              <div class="form-field">
+                <label class="form-label" for="shift_employee_select">従業員<span class="form-required">必須</span></label>
+                <select name="employee_id" id="shift_employee_select" required onchange="handleShiftEmployeeChange(this)">
+                  <option value="">選択してください</option>
+                  <?
+                    for (var e = 0; e <= employees.length - 1; e++) {
+                  ?>
+                  <option value="<?= employees[e].id ?>"><?= employees[e].display_name ?></option>
+                  <? } ?>
+                </select>
+                <!-- マイスター詳細は初期状態・従業員の選び直し・モーダル再表示のたびに閉じる
+                     （updateEmployeeSkillCard_・openShiftDirectAddModal_側でresetSkillCardToggle_を呼ぶ）。
+                     開閉の状態切替だけを行い、選択中の従業員・入力中の時刻には触れない -->
+                <button type="button" id="shift_skill_toggle_btn" class="skill-toggle-btn" aria-expanded="false" aria-controls="employee_skill_card" onclick="toggleShiftSkillCard_()" hidden>マイスター情報を見る</button>
+                <div id="employee_skill_card" class="skill-card" aria-live="polite" hidden></div>
+              </div>
+              <div class="form-field">
+                <span class="form-label">対象営業日</span>
+                <p id="shift_target_date_display" class="form-static-value" aria-live="polite"></p>
+                <p class="form-help">上部の日付ナビゲーションで選択中の営業日に登録されます。実際の勤務開始日は開始時刻から自動計算されます（翌0時〜2時開始は翌日）。</p>
+              </div>
+              <div class="form-field">
+                <label class="form-label" for="shift_start_time">開始時刻<span class="form-required">必須</span></label>
+                <input type="time" name="start_time" id="shift_start_time" step="3600" required/>
+                <p class="form-help">開始・終了は毎時0分（1時間単位）で入力してください。</p>
+              </div>
+              <div class="form-field">
+                <label class="form-label" for="shift_end_time">終了時刻<span class="form-required">必須</span></label>
+                <input type="time" name="end_time" id="shift_end_time" step="3600" required/>
+              </div>
+            </div>
+            <input type="hidden" name="business_date" id="shift_business_date_hidden"/>
+            <div id="shift_submit_message" class="message-area"></div>
+          </div>
+          <div class="modal-actions">
+            <input type="submit" value="登録" class="btn" id="shift_submit_btn" disabled/>
+            <button type="button" class="btn-secondary" onclick="closeShiftDirectAddModal_()">キャンセル</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- 希望バーから開くモーダル。未登録の希望を見ながら、勤務時間を希望の範囲内で調整して登録する
+         （希望そのものの修正・削除は店主画面から撤去した＝店主希望導線整理 2026-09-24。
+         希望の提出・変更は従業員側「希望シフト提出」画面にまとめ、店主は希望を参考に勤務を
+         登録・変更・削除する。勤務に採用しない場合も従業員の希望自体は残る）。
+         レビュー対応（従業員名の下へマイスターラベルを配置 2026-09-21）：shift_edit_modalと
+         同じ.modal--form-scroll・.modal-body-scroll構成にし、従業員名の下の別行に取得マイスターの
+         ラベルを表示する。ラベル表示のロジック（実幅計測・「＋N件」開閉・リサイズ追従）は
+         js_shift.htmlの共通関数（renderSkillTags_等）をshiftWishSkillTagUI_経由で呼び、
+         shift_edit_modal側の要素ID・状態とは独立させている。展開時は別行を新設せず、同じ
+         ラベル列（shift_wish_modal_skill_tags）へ隠れていた分を追加して1回だけ表示し、折り返す。
+         マイスター情報がない場合はラベル行自体をhiddenで消し、不要な空行を残さない -->
+    <div id="shift_wish_modal" class="modal-overlay" hidden onclick="handleShiftWishOverlayClick_(event)">
+      <div class="modal modal--form-scroll" role="dialog" aria-modal="true" aria-labelledby="shift_wish_modal_title">
+        <h3 id="shift_wish_modal_title">希望シフトから勤務を登録</h3>
+        <div class="modal-body-scroll">
+          <p class="modal-field"><span class="modal-field__label">従業員</span><span id="shift_wish_modal_employee" class="modal-field__value"></span></p>
+          <p class="modal-field modal-field--skill-row" id="shift_wish_modal_skill_wrap" hidden>
+            <span id="shift_wish_modal_skill_tags" class="skill-tag-list skill-tag-list--inline"></span>
+            <button type="button" id="shift_wish_skill_more_btn" class="skill-tag-more-btn" aria-expanded="false" aria-controls="shift_wish_modal_skill_tags" onclick="toggleShiftWishSkillDetail_()" hidden></button>
+          </p>
+          <p class="modal-field"><span class="modal-field__label">対象日</span><span id="shift_wish_modal_date" class="modal-field__value"></span></p>
+          <p class="modal-field"><span class="modal-field__label">希望時間</span><span id="shift_wish_modal_range" class="modal-field__value"></span></p>
+          <div class="form-grid">
+            <div class="form-field">
+              <label class="form-label" for="shift_wish_modal_start_time">勤務開始時刻</label>
+              <input type="time" id="shift_wish_modal_start_time" step="3600">
+            </div>
+            <div class="form-field">
+              <label class="form-label" for="shift_wish_modal_end_time">勤務終了時刻</label>
+              <input type="time" id="shift_wish_modal_end_time" step="3600">
+            </div>
+          </div>
+          <p class="form-help">希望時間の範囲内で、店主が勤務時間を調整して登録できます（例：希望11〜19時に対して勤務12〜17時）。</p>
+          <div id="shift_wish_modal_message" class="message-area"></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="shift_wish_modal_register_btn" onclick="handleShiftWishRegisterShift_()">この時間で勤務登録</button>
+          <button type="button" class="btn-secondary" id="shift_wish_modal_cancel_btn" onclick="closeShiftWishModal_()">キャンセル</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 判定詳細モーダル（仮説検証用の最小実装）。以前はメイン画面に常設していた
+         「判定の詳細」カードの内容（見出し・注記・絞り込みボタン・判定結果テーブル）を
+         そのままここへ移動した。判定詳細専用のIDを使い、既存のshift_edit_modalとは
+         独立させている（同時に開くことはない前提だが、Escapeハンドラは両方を扱う） -->
+    <div id="judge_detail_modal" class="modal-overlay" hidden onclick="handleJudgeDetailOverlayClick_(event)">
+      <div class="modal modal--judge-detail" role="dialog" aria-modal="true" aria-labelledby="judge_detail_modal_title">
+        <div class="modal-header">
+          <h3 id="judge_detail_modal_title">判定の詳細</h3>
+          <button type="button" id="judge_detail_modal_close_btn" class="modal-close-btn" onclick="closeJudgeDetailModal_()" aria-label="閉じる">×</button>
+        </div>
+        <p class="note">成立／不成立は人数と必須持ち場の割り当てだけで決めています。</p>
+        <div id="judge_filter_bar" class="judge-filter-bar" hidden></div>
+        <div class="table-scroll modal--judge-detail__table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>時間帯</th>
+                <th>混雑区分</th>
+                <th>出勤人数／必要人数</th>
+                <th>判定</th>
+                <th class="judge-message-column">詳細</th>
+              </tr>
+            </thead>
+            <tbody id="judge_result_body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

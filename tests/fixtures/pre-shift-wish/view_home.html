@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <base target="_top">
+    <?!= HtmlService.createHtmlOutputFromFile('css').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_home_common').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_shift').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_judge').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_home_controller').getContent(); ?>
+  </head>
+  <body>
+    <div class="app-shell">
+    <?!= renderAppSidebar_('home'); ?>
+    <div class="page-container">
+    <header class="app-header">
+      <span class="app-header__eyebrow">freee連携</span>
+      <h1 class="app-header__title">営業日別シフト体制チェック</h1>
+      <p class="app-header__description">シフトの登録から体制・休憩候補の確認まで、この画面で行います。</p>
+      <p class="app-header__company">事業所名称: <span class="app-header__company-name"><?= getCompanyName(); ?></span></p>
+    </header>
+
+    <?
+      // 従業員一覧はこのページ内で複数回使うため、ここで1回だけ取得する
+      var employees = getEmployees();
+    ?>
+    <script>
+      // サーバーで取得済みの従業員一覧をそのままクライアント側でも使う（時間軸の行順・再取得なしのため）
+      var employees = <?!= JSON.stringify(employees) ?>;
+    </script>
+
+    <?
+      // マイスター概要（取得マイスター・技能点）もこのページ内で使うため、ここで1回だけ取得する
+      var maisterSummaries = getAllMaisterSummaries();
+    ?>
+    <script>
+      // サーバーで取得済みのマイスター概要をそのままクライアント側でも使う
+      // （シフト登録フォームで従業員を選ぶたびにgoogle.script.runで通信しないため）
+      var maisterSummaries = <?!= JSON.stringify(maisterSummaries) ?>;
+    </script>
+
+    <div class="card nav-card">
+      <div class="nav-primary">
+        <button type="button" class="nav-btn" onclick="goToPreviousDay()" aria-label="前日" title="前日">←</button>
+        <div class="nav-date">
+          <span id="business_date_label" class="nav-date__label"></span>
+        </div>
+        <button type="button" class="nav-btn" onclick="goToNextDay()" aria-label="翌日" title="翌日">→</button>
+      </div>
+      <div class="nav-secondary">
+        <label class="nav-field">
+          <span class="nav-field__label">日付を選択</span>
+          <input type="date" id="business_date_input" onchange="handleBusinessDateInputChange(this)">
+        </label>
+        <div class="nav-field">
+          <span id="business_day_type_display" class="nav-field__value" aria-live="polite"></span>
+        </div>
+        <button type="button" class="nav-btn-small" onclick="goToToday()">今日へ戻る</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>シフト予定の登録</h3>
+      <form id="shiftForm" onsubmit="return handleShiftFormSubmit(this)">
+        <div class="form-grid">
+          <div class="form-field">
+            <label class="form-label" for="shift_employee_select">従業員<span class="form-required">必須</span></label>
+            <select name="employee_id" id="shift_employee_select" required onchange="handleShiftEmployeeChange(this)">
+              <option value="">選択してください</option>
+              <?
+                for (var e = 0; e <= employees.length - 1; e++) {
+              ?>
+              <option value="<?= employees[e].id ?>"><?= employees[e].display_name ?></option>
+              <? } ?>
+            </select>
+            <div id="employee_skill_card" class="skill-card" aria-live="polite"></div>
+          </div>
+          <div class="form-field">
+            <span class="form-label">対象営業日</span>
+            <p id="shift_target_date_display" class="form-static-value" aria-live="polite"></p>
+            <p class="form-help">上部の日付ナビゲーションで選択中の営業日に登録されます。実際の勤務開始日は開始時刻から自動計算されます（翌0時〜2時開始は翌日）。</p>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="shift_start_time">開始時刻<span class="form-required">必須</span></label>
+            <input type="time" name="start_time" id="shift_start_time" step="3600" required/>
+            <p class="form-help">開始・終了は毎時0分（1時間単位）で入力してください。</p>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="shift_end_time">終了時刻<span class="form-required">必須</span></label>
+            <input type="time" name="end_time" id="shift_end_time" step="3600" required/>
+          </div>
+        </div>
+        <input type="hidden" name="business_date" id="shift_business_date_hidden"/>
+        <div class="form-actions">
+          <input type="submit" value="登録" class="btn" id="shift_submit_btn" disabled/>
+          <div id="shift_submit_message" class="message-area"></div>
+        </div>
+      </form>
+    </div>
+
+    <div class="card card--feature">
+      <h3>営業日のシフト体制</h3>
+      <!-- 判定操作専用の横並びラッパー（既存のbtn-frameはcolumn方向のため、他画面へ影響させずに
+           横並びにするための修飾クラス）。「この日のシフトを判定」「判定結果を見る」「要約」の順に並べ、
+           狭い画面ではflex-wrapで自然に折り返す -->
+      <div class="judge-action-row">
+        <button type="button" class="btn" id="judge_btn" onclick="handleJudgeClick()" disabled>この日のシフトを判定</button>
+        <!-- 「判定結果を見る」ボタン（仮説検証用の最小実装）。
+             判定成功後だけ表示し、判定前・判定中・通信失敗・サーバーエラー・日付変更・
+             シフト登録変更削除の後はresetJudgeFilterState_により非表示に戻す（前回結果を開けなくする） -->
+        <button type="button" id="judge_open_detail_btn" class="btn-secondary" onclick="handleOpenJudgeDetailClick_(event)" hidden>判定結果を見る</button>
+        <!-- 判定結果の要約。判定成功後だけ表示し、判定前・判定中・通信失敗・サーバーエラー・
+             日付変更・シフト登録変更削除の後はresetJudgeFilterState_により非表示に戻す -->
+        <div id="judge_summary" class="note judge-summary" hidden></div>
+      </div>
+      <div id="judge_message" class="note"></div>
+      <div id="timeline_message" class="note"></div>
+      <p class="note">登録済みのシフトバーを選択すると変更・削除できます</p>
+      <div class="timeline-scroll">
+        <div class="timeline-table">
+          <div class="timeline-row timeline-header">
+            <div class="timeline-name">スタッフ</div>
+            <div class="timeline-track" id="timeline_header_track"></div>
+          </div>
+          <div class="timeline-row timeline-judge-row">
+            <div class="timeline-name">判定</div>
+            <div class="timeline-track" id="timeline_judge_track"></div>
+          </div>
+          <div id="timeline_body"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>休憩確保の候補</h3>
+      <p class="note">6時間以上勤務する従業員が、一人ずつ連続休憩を取っても人数・持ち場を維持できる候補があるかを確認します。休憩の取得や安定営業を保証するものではなく、当日の判断材料です。</p>
+      <div id="break_summary_message" class="note"></div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>対象者</th>
+              <th>勤務時間</th>
+              <th>必要休憩</th>
+              <th>状態</th>
+              <th class="break-detail-column">候補・注意</th>
+            </tr>
+          </thead>
+          <tbody id="break_result_body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    </div>
+    </div>
+
+    <div id="shift_edit_modal" class="modal-overlay" hidden onclick="handleShiftEditOverlayClick_(event)">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="shift_edit_modal_title">
+        <h3 id="shift_edit_modal_title">シフトの変更・削除</h3>
+        <p class="modal-field"><span class="modal-field__label">従業員</span><span id="shift_edit_modal_employee" class="modal-field__value"></span></p>
+        <p class="modal-field"><span class="modal-field__label">対象日</span><span id="shift_edit_modal_date" class="modal-field__value"></span></p>
+        <div class="form-grid">
+          <div class="form-field">
+            <label class="form-label" for="shift_edit_start_time">開始時刻</label>
+            <input type="time" id="shift_edit_start_time" step="3600">
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="shift_edit_end_time">終了時刻</label>
+            <input type="time" id="shift_edit_end_time" step="3600">
+          </div>
+        </div>
+        <p class="form-help">開始・終了は毎時0分（1時間単位）で入力してください。</p>
+        <div id="shift_edit_modal_message" class="message-area"></div>
+        <div class="modal-actions">
+          <button type="button" id="shift_edit_save_btn" class="btn" onclick="handleShiftEditSave_()">変更を保存</button>
+          <button type="button" id="shift_edit_delete_btn" class="btn-danger" onclick="handleShiftEditDelete_()">削除</button>
+          <button type="button" id="shift_edit_cancel_btn" class="btn-secondary" onclick="closeShiftEditModal_()">キャンセル</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 判定詳細モーダル（仮説検証用の最小実装）。以前はメイン画面に常設していた
+         「判定の詳細」カードの内容（見出し・注記・絞り込みボタン・判定結果テーブル）を
+         そのままここへ移動した。判定詳細専用のIDを使い、既存のshift_edit_modalとは
+         独立させている（同時に開くことはない前提だが、Escapeハンドラは両方を扱う） -->
+    <div id="judge_detail_modal" class="modal-overlay" hidden onclick="handleJudgeDetailOverlayClick_(event)">
+      <div class="modal modal--judge-detail" role="dialog" aria-modal="true" aria-labelledby="judge_detail_modal_title">
+        <div class="modal-header">
+          <h3 id="judge_detail_modal_title">判定の詳細</h3>
+          <button type="button" id="judge_detail_modal_close_btn" class="modal-close-btn" onclick="closeJudgeDetailModal_()" aria-label="閉じる">×</button>
+        </div>
+        <p class="note">成立／不成立は人数と必須持ち場の割り当てだけで決めています。合計スコアは参考値で、営業の安定性を保証する値ではありません。</p>
+        <div id="judge_filter_bar" class="judge-filter-bar" hidden></div>
+        <div class="table-scroll modal--judge-detail__table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>時間帯</th>
+                <th>混雑区分</th>
+                <th>出勤人数／必要人数</th>
+                <th>判定</th>
+                <th class="judge-message-column">詳細</th>
+              </tr>
+            </thead>
+            <tbody id="judge_result_body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

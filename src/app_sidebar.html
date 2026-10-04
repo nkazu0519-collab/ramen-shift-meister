@@ -1,0 +1,300 @@
+<div id="app_sidebar_scrim" class="app-sidebar-scrim" hidden onclick="closeAppSidebar_()"></div>
+
+<div class="app-sidebar-wrap" id="app_sidebar_wrap">
+  <aside class="app-sidebar" id="app_sidebar" aria-label="機能メニュー">
+    <a class="app-sidebar__brand" href="<?= getAppUrl() ?>" aria-label="店舗シフト支援（ホームへ戻る）">
+      <span class="app-sidebar__brand-mark" aria-hidden="true">◆</span>
+      <span class="app-sidebar__brand-label">店舗シフト支援</span>
+    </a>
+
+    <nav class="app-sidebar__nav">
+      <p class="app-sidebar__group-label">シフト管理</p>
+      <a class="app-sidebar__item<?= activePage === 'home' ? ' is-active' : '' ?>" href="<?= getAppUrl() ?>" title="シフト管理" aria-label="シフト管理">
+        <span class="app-sidebar__icon" aria-hidden="true">⌂</span>
+        <span class="app-sidebar__item-label">シフト管理</span>
+        <span class="app-sidebar__tooltip" aria-hidden="true">シフト管理</span>
+      </a>
+      <!-- 希望シフト提出状況（2026-09-22）。店主が従業員ごとの提出状況を確認する表示専用画面。
+           シフト管理のメイン画面へはカードを追加せず、サイドバーの独立項目からのみ開く -->
+      <a class="app-sidebar__item<?= activePage === 'wish-status' ? ' is-active' : '' ?>" href="<?= getAppUrl() ?>?page=wish-status" title="提出状況" aria-label="希望シフト提出状況">
+        <span class="app-sidebar__icon" aria-hidden="true">☑</span>
+        <span class="app-sidebar__item-label">提出状況</span>
+        <span class="app-sidebar__tooltip" aria-hidden="true">提出状況</span>
+      </a>
+
+      <p class="app-sidebar__group-label">スタッフ管理</p>
+      <a class="app-sidebar__item<?= activePage === 'meister' ? ' is-active' : '' ?>" href="<?= getAppUrl() ?>?page=meister" title="マイスター管理" aria-label="マイスター管理">
+        <span class="app-sidebar__icon" aria-hidden="true">♙</span>
+        <span class="app-sidebar__item-label">マイスター管理</span>
+        <span class="app-sidebar__tooltip" aria-hidden="true">マイスター管理</span>
+      </a>
+
+      <!-- 従業員希望シフト一括提出（2026-09-21）。店主用の「シフト管理」と混同しないよう、
+           グループ見出し・アイコン・名称を分ける（この項目は従業員自身が使う確認用の別画面） -->
+      <p class="app-sidebar__group-label">従業員向け</p>
+      <a class="app-sidebar__item<?= activePage === 'wish' ? ' is-active' : '' ?>" href="<?= getAppUrl() ?>?page=wish" title="希望シフト提出" aria-label="希望シフト提出">
+        <span class="app-sidebar__icon" aria-hidden="true">✎</span>
+        <span class="app-sidebar__item-label">希望シフト提出</span>
+        <span class="app-sidebar__tooltip" aria-hidden="true">希望シフト提出</span>
+      </a>
+    </nav>
+  </aside>
+
+  <!-- 開閉ボタンはサイドバーの外側（app-sidebar-wrap直下）に置く。サイドバー自体が
+       hidden・幅0になっても、このボタンだけは独立して表示され続けるようにするため
+       （スマホで閉じている間もボタンを表示し続ける必要があるが、閉じている間の
+       サイドバー本体はTab移動対象から外したいので、両者を同じhidden制御にできない） -->
+  <button type="button" id="app_sidebar_toggle_btn" class="app-sidebar-toggle-btn" aria-expanded="true" aria-controls="app_sidebar" aria-label="サイドバーを折りたたむ" onclick="toggleAppSidebar_()">
+    <span class="app-sidebar-toggle-btn__icon" aria-hidden="true">&laquo;</span>
+  </button>
+</div>
+
+<script>
+  /**
+   *  サイドバーの開閉（全画面共通）。view_home.html・view_detail.html・view_meister_bulk.htmlの
+   *  いずれもこのファイル（app_sidebar.html）をrenderAppSidebar_経由でincludeするため、この
+   *  <script>もそのまま各画面に展開される。他のクライアントJS部分ファイル（js_shift.html等）と違い
+   *  view_home.html専用ではないため、js_home_controller.html側には置かず、ここで完結させる。
+   *
+   *  開閉だけではページ遷移・再読み込み・フォーム初期化を行わない（表示状態の切り替えとフォーカス
+   *  移動のみ）。開閉状態の永続保存（sessionStorage等）は今回は行わず、画面を開き直すたびに
+   *  CSSの初期状態（PCは展開・スマホは折りたたみ）へ戻る。
+   *
+   *  デザイン更新（参考画像への合わせ込み 2026-09-16）:
+   *    PC幅（48remより広い）: 折りたたんでもサイドバー自体は消さず、アイコンだけの細い列として
+   *      残す（.app-shellへis-sidebar-collapsedを付けるだけで、CSS側が幅・項目名の表示を
+   *      切り替える。サイドバー要素のhiddenは使わない＝アイコンからの遷移とTab移動を維持する）。
+   *      開閉ボタンはサイドバーの右上、右端境界から少し外へ張り出す位置に置く
+   *      （app-sidebar-wrap内でposition:absolute配置。サイドバー自体の子ではなく兄弟にし、
+   *      「本文とは別の横幅を取る独立した列」にはしない＝wrap自体はサイドバーと同じ幅しか取らない）。
+   *    スマホ幅（48rem以下）: 既存の「初期は閉じる・開くと本文に重ねる」方式を維持する。
+   *      サイドバー本体（#app_sidebar）はhiddenで開閉するが、開閉ボタン自体は
+   *      サイドバーの外（app-sidebar-wrap直下）にあるため、閉じている間も表示され続け、
+   *      再度開く操作を常に残せる。
+   *
+   *  スマホ幅（48rem以下）: サイドバーは初期状態で隠れており、開くと本文へ重ねて表示する
+   *    オーバーレイになる（.app-shellへis-sidebar-openを付け外しする）。開いている間は
+   *    背景操作を防ぐため、透明な背景要素（app_sidebar_scrim）をクリック可能にし、本文
+   *    （.page-container）へinert属性を付けてマウス・キーボードどちらでも操作できなくする。
+   *    bodyのスクロールも止める。Escapeキーでも閉じられるようにし、閉じたら開閉ボタンへ
+   *    フォーカスを戻す。
+   *
+   *  レビュー対応（モーダルとの競合 2026-09-16）:
+   *    view_home.htmlのモーダル群（shift_edit_modal等）は.app-shellの外側（body直下の兄弟要素）に
+   *    置かれているため、モーダルが1つでも開いている間は.app-shell全体（サイドバー・開閉ボタン・
+   *    本文すべて）へinert属性を付ける。これによりz-indexの重なり順に関係なく、マウスクリックも
+   *    キーボードのTab移動もサイドバー側へ届かなくなる（inertは操作可否そのものを止めるため、
+   *    z-index調整だけでは防げない「重なっていないが背後にある要素へのTab移動」も防げる）。
+   *    Escapeハンドラも、モーダルが開いている間はサイドバー側が何もしない形で競合を避ける
+   *    （js_home_controller.html側のモーダルEscapeハンドラを優先させ、二重に閉じ動作をしない）。
+   */
+  var APP_SIDEBAR_MOBILE_QUERY_ = window.matchMedia('(max-width: 48rem)')
+  var APP_SIDEBAR_TOGGLE_ICON_EXPANDED_ = '«' // «（左向き二重山括弧。展開時＝押すと折りたたむ）
+  var APP_SIDEBAR_TOGGLE_ICON_COLLAPSED_ = '»' // »（右向き二重山括弧。折りたたみ時＝押すと展開する）
+
+  /**
+   *  現在デスクトップ幅かどうか。マウスやキーボードでの見た目の切り替えとJSの判定を一致させるため、
+   *  CSSのメディアクエリと同じ48rem基準をJS側でも使う
+   */
+  function isAppSidebarDesktop_() {
+    return !APP_SIDEBAR_MOBILE_QUERY_.matches
+  }
+
+  /**
+   *  view_home.htmlのモーダル群のうち、いずれかが表示中（hidden属性なし）かどうかを判定する。
+   *  view_detail.html・view_meister_bulk.htmlにはこれらのidが存在しないため、その場合は
+   *  自然に「モーダルなし」として扱われる（document.getElementByIdはnullを返す）
+   */
+  function isAnyAppModalOpen_() {
+    var modalIds = ['shift_edit_modal', 'shift_direct_add_modal', 'shift_wish_modal', 'judge_detail_modal']
+    for (var i = 0; i < modalIds.length; i++) {
+      var modal = document.getElementById(modalIds[i])
+      if (modal && !modal.hidden) return true
+    }
+    return false
+  }
+
+  /**
+   *  モーダル表示中はサイドバー・開閉ボタンを丸ごと操作不能にする（inert）。モーダルを閉じたら解除する。
+   *  inertは要素とその子孫のクリック・フォーカス・Tab移動をまとめて無効化するため、z-index調整だけでは
+   *  防げない「見た目は隠れていてもTabで届いてしまう」問題も同時に防げる
+   */
+  function syncAppShellInertForModal_() {
+    var shell = document.querySelector('.app-shell')
+    if (isAnyAppModalOpen_()) {
+      shell.setAttribute('inert', '')
+    } else {
+      shell.removeAttribute('inert')
+    }
+  }
+
+  /**
+   *  サイドバーの開閉ボタン。デスクトップでは折りたたみ、スマホでは開閉オーバーレイとして働く。
+   *  モーダル表示中はshell自体がinertになりボタンへ操作が届かないはずだが、念のため二重に防ぐ
+   */
+  function toggleAppSidebar_() {
+    if (isAnyAppModalOpen_()) return
+    if (isAppSidebarDesktop_()) {
+      setAppSidebarCollapsed_(!document.querySelector('.app-shell').classList.contains('is-sidebar-collapsed'))
+    } else {
+      setAppSidebarOpenOnMobile_(!document.querySelector('.app-shell').classList.contains('is-sidebar-open'))
+    }
+  }
+
+  /**
+   *  開閉ボタンの見た目（アイコンの向き）とaria-label・aria-expandedを、現在の状態に
+   *  合わせて更新する。expandedは「サイドバーの中身（項目名）が見えているか」を表す
+   *  （PC折りたたみ時もサイドバー自体は残るが、中身は隠れているためfalseにする）
+   */
+  function updateAppSidebarToggleBtnState_(expanded) {
+    var toggleBtn = document.getElementById('app_sidebar_toggle_btn')
+    var icon = toggleBtn.querySelector('.app-sidebar-toggle-btn__icon')
+    toggleBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false')
+    toggleBtn.setAttribute('aria-label', expanded ? 'サイドバーを折りたたむ' : 'サイドバーを展開する')
+    if (icon) icon.textContent = expanded ? APP_SIDEBAR_TOGGLE_ICON_EXPANDED_ : APP_SIDEBAR_TOGGLE_ICON_COLLAPSED_
+  }
+
+  /**
+   *  PC折りたたみ時、項目にhoverまたはキーボードフォーカスした際にツールチップ（.app-sidebar__tooltip）を
+   *  項目の右横へ表示する。CSSのfixed配置だけでは左上(0,0)基準になり位置がずれるため、
+   *  対象要素のgetBoundingClientRect()から実際の座標を計算してJS側で設定する
+   *  （レビュー対応：title属性だけではキーボードフォーカス時にツールチップが出ないブラウザがあるため、
+   *  hover・フォーカスどちらでも確実に項目名を確認できるようにする）
+   */
+  function positionAppSidebarTooltip_(itemEl) {
+    var tooltip = itemEl.querySelector('.app-sidebar__tooltip')
+    if (!tooltip) return
+    var rect = itemEl.getBoundingClientRect()
+    tooltip.style.left = rect.right + 8 + 'px'
+    tooltip.style.top = rect.top + rect.height / 2 + 'px'
+    tooltip.style.transform = 'translateY(-50%)'
+  }
+
+  function setupAppSidebarTooltips_() {
+    var items = document.querySelectorAll('.app-sidebar__item')
+    for (var i = 0; i < items.length; i++) {
+      ;(function (itemEl) {
+        itemEl.addEventListener('mouseenter', function () {
+          positionAppSidebarTooltip_(itemEl)
+        })
+        itemEl.addEventListener('focus', function () {
+          positionAppSidebarTooltip_(itemEl)
+        })
+      })(items[i])
+    }
+  }
+
+  /**
+   *  デスクトップ幅での折りたたみ状態を切り替える。参考画像（freee人事労務のサイドバー）に
+   *  合わせ、折りたたんでもサイドバー自体は消さず、アイコンだけの細い列として残す
+   *  （sidebar.hiddenは使わない＝アイコンからの画面遷移・Tab移動を維持したまま、
+   *  CSS側で.app-shell.is-sidebar-collapsed .app-sidebarの幅・項目名表示だけを切り替える）。
+   *  折りたたんで空いた分はflexレイアウトの本文（.page-container）側が自動的に広がる
+   */
+  function setAppSidebarCollapsed_(collapsed) {
+    var shell = document.querySelector('.app-shell')
+    shell.classList.toggle('is-sidebar-collapsed', collapsed)
+    updateAppSidebarToggleBtnState_(!collapsed)
+  }
+
+  /**
+   *  スマホ幅での開閉状態を切り替える。開いている間は本文を押し縮めず重ねて表示し、
+   *  背景の透明なscrim要素をクリック可能にして背景操作を防ぎ、bodyのスクロールも止める。
+   *  さらに本文（.page-container）へinert属性を付け、マウスクリックだけでなくTab／Shift+Tabでの
+   *  移動もサイドバーの外へ出られないようにする（開いている間はサイドバー内の要素だけがフォーカス対象になる）。
+   *  閉じたメニュー内のリンクにTabで移動できないよう、閉じている間はサイドバー自体をhiddenにする
+   *  （hidden属性の要素とその子孫は既定でTab移動の対象から外れる）
+   */
+  function setAppSidebarOpenOnMobile_(open) {
+    var shell = document.querySelector('.app-shell')
+    var sidebar = document.getElementById('app_sidebar')
+    var scrim = document.getElementById('app_sidebar_scrim')
+    var toggleBtn = document.getElementById('app_sidebar_toggle_btn')
+    var pageContainer = document.querySelector('.page-container')
+    shell.classList.toggle('is-sidebar-open', open)
+    sidebar.hidden = !open
+    scrim.hidden = !open
+    document.body.classList.toggle('app-sidebar-scroll-lock', open)
+    updateAppSidebarToggleBtnState_(open)
+    if (pageContainer) {
+      if (open) {
+        pageContainer.setAttribute('inert', '')
+      } else {
+        pageContainer.removeAttribute('inert')
+      }
+    }
+    if (open) {
+      var firstLink = sidebar.querySelector('.app-sidebar__item')
+      if (firstLink) firstLink.focus()
+    } else {
+      toggleBtn.focus()
+    }
+  }
+
+  /**
+   *  Escapeキー・scrimクリック・画面幅変更時の後始末から共通で呼ぶ「閉じる」処理
+   *  （デスクトップでは折りたたみを開こうとしている場合もあるため、モバイルのオーバーレイだけを閉じる）
+   */
+  function closeAppSidebar_() {
+    if (isAppSidebarDesktop_()) return
+    if (!document.querySelector('.app-shell').classList.contains('is-sidebar-open')) return
+    setAppSidebarOpenOnMobile_(false)
+  }
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return
+    // モーダルが開いている間は、js_home_controller.html側のEscapeハンドラにだけ処理させる
+    // （サイドバーは閉じていない、または既にinertで操作不能のため、ここで何もしなくてよい）
+    if (isAnyAppModalOpen_()) return
+    closeAppSidebar_()
+  })
+
+  /**
+   *  画面幅がデスクトップ⇔スマホの境界をまたいだ場合、片方の状態（折りたたみクラス・
+   *  開閉クラス・scrim表示・スクロールロック・inert）が残って操作不能にならないよう、
+   *  現在の幅に応じた初期状態へ揃え直す
+   */
+  function resetAppSidebarForViewport_() {
+    var shell = document.querySelector('.app-shell')
+    var sidebar = document.getElementById('app_sidebar')
+    var scrim = document.getElementById('app_sidebar_scrim')
+    var pageContainer = document.querySelector('.page-container')
+    shell.classList.remove('is-sidebar-collapsed', 'is-sidebar-open')
+    scrim.hidden = true
+    document.body.classList.remove('app-sidebar-scroll-lock')
+    if (pageContainer) pageContainer.removeAttribute('inert')
+    if (isAppSidebarDesktop_()) {
+      // PCの初期状態は展開（sidebar.hiddenは使わない。折りたたみ時も常にサイドバー自体は表示する）
+      sidebar.hidden = false
+      updateAppSidebarToggleBtnState_(true)
+    } else {
+      // スマホの初期状態は閉じる（サイドバー本体だけhidden。開閉ボタンは別要素なので表示され続ける）
+      sidebar.hidden = true
+      updateAppSidebarToggleBtnState_(false)
+    }
+    syncAppShellInertForModal_()
+  }
+
+  if (APP_SIDEBAR_MOBILE_QUERY_.addEventListener) {
+    APP_SIDEBAR_MOBILE_QUERY_.addEventListener('change', resetAppSidebarForViewport_)
+  } else {
+    // 古いブラウザ向けのフォールバック（addEventListener未対応のMediaQueryList）
+    APP_SIDEBAR_MOBILE_QUERY_.addListener(resetAppSidebarForViewport_)
+  }
+
+  window.addEventListener('load', resetAppSidebarForViewport_)
+  setupAppSidebarTooltips_()
+
+  /**
+   *  モーダルの開閉はjs_shift.html・js_shift_wish.html・js_judge.html側のhidden切り替えで行われるため、
+   *  ここでは変異を監視してinertの同期だけを行う（モーダル側の実装を変更せずに済む）。
+   *  view_home.html以外（モーダルを持たない画面）ではisAnyAppModalOpen_が常にfalseを返すため、
+   *  MutationObserverを張っても実質的に何も起きない
+   */
+  new MutationObserver(syncAppShellInertForModal_).observe(document.body, {
+    attributes: true,
+    attributeFilter: ['hidden'],
+    subtree: true
+  })
+  syncAppShellInertForModal_()
+</script>

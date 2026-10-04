@@ -1,0 +1,103 @@
+<script>
+
+      function goToPreviousDay() {
+        currentBusinessDate.setDate(currentBusinessDate.getDate() - 1)
+        onBusinessDateChanged()
+      }
+
+      function goToNextDay() {
+        currentBusinessDate.setDate(currentBusinessDate.getDate() + 1)
+        onBusinessDateChanged()
+      }
+
+      function goToToday() {
+        currentBusinessDate = new Date()
+        currentBusinessDate.setHours(0, 0, 0, 0)
+        onBusinessDateChanged()
+      }
+
+      function handleBusinessDateInputChange(inputEl) {
+        if (!inputEl.value) return
+        currentBusinessDate = parseLocalDateStr_(inputEl.value)
+        onBusinessDateChanged()
+      }
+
+      /**
+       *  営業日が変わるたびに呼ぶ：表示を同期し、古い判定結果を消し、時間軸・営業日区分を取り直す
+       */
+      function onBusinessDateChanged() {
+        syncNavDisplay()
+        clearJudgeResults()
+        refreshTimeline()
+        refreshBusinessDayType()
+        updateDeleteMessage_('')
+      }
+
+      /**
+       *  選択中の営業日から、営業日区分（平日／休日前／休日）をサーバー側で自動判定する
+       *  クライアントの手動選択は行わない。日付切替の連打・通信失敗時に古い日付の判定結果が
+       *  表示されないよう、時間軸・判定結果と同じ「通信連番＋対象営業日」の一致チェックで古い結果を破棄する
+       *  判定が成功するまでcurrentDayTypeは更新せず、登録・判定ボタンも押せないままにする
+       */
+      function refreshBusinessDayType() {
+        businessDayTypeRequestSequence++
+        var requestId = businessDayTypeRequestSequence
+        var requestedBusinessDate = formatDateInputValue_(currentBusinessDate)
+
+        businessDayTypeReady = false
+        updateActionButtonsEnabled_()
+        updateBusinessDayTypeDisplay_('自動判定中…', false)
+
+        google.script.run
+          .withSuccessHandler(function (result) {
+            if (requestId !== businessDayTypeRequestSequence) return // 古い通信結果は破棄
+            if (requestedBusinessDate !== formatDateInputValue_(currentBusinessDate)) return
+            if (!result || !result.success) {
+              businessDayTypeReady = false
+              updateBusinessDayTypeDisplay_((result && result.message) || '営業日区分を判定できませんでした', true)
+              updateActionButtonsEnabled_()
+              return
+            }
+            currentDayType = result.day_type
+            businessDayTypeReady = true
+            updateBusinessDayTypeDisplay_('営業日区分：' + currentDayType + '（自動）', false)
+            updateActionButtonsEnabled_()
+          })
+          .withFailureHandler(function (error) {
+            if (requestId !== businessDayTypeRequestSequence) return
+            if (requestedBusinessDate !== formatDateInputValue_(currentBusinessDate)) return
+            businessDayTypeReady = false
+            updateBusinessDayTypeDisplay_('営業日区分の判定に失敗しました: ' + error.message, true)
+            updateActionButtonsEnabled_()
+          })
+          .getBusinessDayType(requestedBusinessDate)
+      }
+
+      /**
+       *  Escapeキーで、現在開いているモーダルだけを閉じる（シフト変更・削除モーダルと判定詳細モーダルの
+       *  両方がこのハンドラを共有する）。同時に開くことはない前提だが、念のためどちらもhiddenでない
+       *  場合はシフト変更・削除モーダルを優先する（開いた順ではなく、より操作の重いモーダルを優先して残す）
+       */
+      document.addEventListener('keydown', function (event) {
+        if (event.key !== 'Escape') return
+        var shiftModal = document.getElementById('shift_edit_modal')
+        if (!shiftModal.hidden) {
+          closeShiftEditModal_()
+          return
+        }
+        var judgeModal = document.getElementById('judge_detail_modal')
+        if (!judgeModal.hidden) closeJudgeDetailModal_()
+      })
+
+      window.addEventListener('load', function () {
+        preventFormSubmit()
+        currentBusinessDate = new Date()
+        currentBusinessDate.setHours(0, 0, 0, 0)
+        renderTimelineHeader()
+        syncNavDisplay()
+        updateEmployeeSkillCard_('')
+        clearJudgeResults()
+        refreshTimeline()
+        refreshBusinessDayType()
+      })
+</script>

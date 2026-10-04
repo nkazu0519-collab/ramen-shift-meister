@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <base target="_top">
+    <?!= HtmlService.createHtmlOutputFromFile('css').getContent(); ?>
+    <script>
+      // https://developers.google.com/apps-script/guides/html/communication#forms
+      function preventFormSubmit() {
+        var forms = document.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+          forms[i].addEventListener('submit', function(event) {
+            event.preventDefault();
+          });
+        }
+      }
+      window.addEventListener('load', preventFormSubmit);
+
+      /**
+       *  マイスター登録の保存ボタンクリック時に発火
+       *  レビュー対応（9月25日提出版_合計スコア表示の削除）：postMaisterBadgesの戻り値には
+       *  内部計算のscoreが残っているが、保存完了メッセージの表示にはmessageだけを使う
+       */
+      function handleMaisterFormSubmit(formObject) {
+        updateMaisterMessage('更新中....')
+        google.script.run
+          .withSuccessHandler(function (result) {
+            updateMaisterMessage(result.message)
+          })
+          .withFailureHandler(function (error) {
+            updateMaisterMessage('保存に失敗しました: ' + error.message)
+          })
+          .postMaisterBadges(formObject);
+      }
+
+      /**
+       *  マイスター登録の保存ボタン下のメッセージを更新
+       */
+      function updateMaisterMessage(message) {
+        var div = document.getElementById('maister_submit_message');
+        div.textContent = message;
+      }
+    </script>
+  </head>
+  <body>
+    <div class="app-shell">
+    <?!= renderAppSidebar_('meister'); ?>
+    <div class="page-container">
+    <header class="app-header">
+      <span class="app-header__eyebrow">freee連携</span>
+      <h1 class="app-header__title">
+        <?
+          var emp = getEmployee().employee
+        ?>
+        <?= emp.display_name ?>
+      </h1>
+      <p class="app-header__description">この従業員のマイスター取得状況を登録します。</p>
+    </header>
+
+    <div class="card">
+      <h3>マイスター登録</h3>
+      <!--
+        レビュー対応（個別点数表示の削除漏れ修正 2026-09-24）：技能点は店主の判断材料として
+        表示しない方針（9月25日提出版_合計スコア表示の削除）だが、この個別マイスター登録画面の
+        meister-item__points（点数表示）が削除漏れとして残っていたため、ここで削除した。
+        マイスター一覧のpointsは内部計算として引き続き返るが、画面には出さない
+      -->
+      <form id="maisterForm" onsubmit="handleMaisterFormSubmit(this)">
+        <div class="meister-list">
+          <?
+            var maisterList = getMaisterDisplayList()
+            for (var i = 0; i <= maisterList.length - 1; i++) {
+              var m = maisterList[i]
+          ?>
+          <label class="meister-item">
+            <input type="checkbox" name="<?= m.key ?>" <?= m.checked ? 'checked' : '' ?> />
+            <span class="meister-item__name"><?= m.key ?></span>
+          </label>
+          <? } ?>
+        </div>
+        <div class="form-actions">
+          <input type="submit" value="保存" class="btn"/>
+          <div id="maister_submit_message" class="message-area"></div>
+        </div>
+      </form>
+    </div>
+    </div>
+    </div>
+  </body>
+</html>

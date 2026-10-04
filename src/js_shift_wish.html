@@ -1,0 +1,157 @@
+<script>
+
+      /**
+       *  希望シフト機能のクライアント側制御。
+       *  希望バーを押して開くモーダル（希望を見ながら勤務時間を調整して登録する）を扱う。
+       *  希望の提出・変更は従業員側「希望シフト提出」画面（js_employee_wish.html）に
+       *  まとめる（従業員側の希望削除機能は今回追加していない）。店主側の希望追加UI
+       *  （店主希望導線整理 2026-09-24）に続き、店主画面の
+       *  「希望を修正」「希望を削除」も撤去した（店主希望導線整理・希望編集削除撤去
+       *  2026-09-24。希望の提出・変更は従業員側にまとめ、店主は希望を参考に勤務を
+       *  登録・変更・削除するという役割分担に揃える。勤務に採用しない場合も従業員の
+       *  希望自体は残る＝希望データの削除・変更をこのモーダルから行わなくなっただけで、
+       *  既存の希望データ・提出日時・期限後フラグには一切影響しない）。
+       *  希望だけの時間は判定に含めない前提のため、ここではjudge関連の状態には一切触れない
+       *  （勤務登録・変更・削除が成功した場合だけ、既存のclearJudgeResults()で判定結果を無効化する）
+       */
+
+      // ---- 希望バーから開くモーダル（希望の範囲内で勤務時間を調整して登録する） ----
+
+      var shiftWishContext = null // { wish_id, employee_id, employeeName, start_ms, end_ms, startLabel, endLabel }
+      var shiftWishTriggerEl = null // モーダルを開いた希望バー要素。閉じる際にここへフォーカスを戻す
+      var shiftWishRequestInProgress = false // 登録通信中の連打防止
+
+      // 従業員名横のマイスターラベル表示（js_shift.htmlのcreateSkillTagUI_・renderSkillTags_等、
+      // shift_edit_modalと共通のロジック）専用インスタンス。要素ID一式をshift_edit_modal側と
+      // 独立させているため、片方の開閉・リサイズがもう片方の表示・状態に影響しない
+      // （レビュー対応：希望シフトモーダルにもマイスターラベルを追加 2026-09-16）
+      var shiftWishSkillTagUI_ = createSkillTagUI_({
+        inlineList: 'shift_wish_modal_skill_tags',
+        moreBtn: 'shift_wish_skill_more_btn',
+        wrapField: 'shift_wish_modal_skill_wrap'
+      })
+
+      function toggleShiftWishSkillDetail_() {
+        toggleSkillDetail_(shiftWishSkillTagUI_)
+      }
+
+      function setShiftWishModalButtonsDisabled_(disabled) {
+        document.getElementById('shift_wish_modal_register_btn').disabled = disabled
+        document.getElementById('shift_wish_modal_cancel_btn').disabled = disabled
+      }
+
+      function updateShiftWishModalMessage_(message) {
+        document.getElementById('shift_wish_modal_message').textContent = message
+      }
+
+      /**
+       *  モーダルの表示状態を組み立てる。開始・終了time inputへ希望時間をそのまま初期値として入れ、
+       *  店主が希望の範囲内で調整できるようにする（希望そのものの時刻は変更しない。勤務時間の
+       *  調整と希望自体の変更を混同しない＝希望を修正するモードは撤去済み）
+       */
+      function applyShiftWishNormalMode_() {
+        document.getElementById('shift_wish_modal_title').textContent = '希望シフトから勤務を登録'
+        document.getElementById('shift_wish_modal_start_time').value = msToTimeInputValue_(shiftWishContext.start_ms)
+        document.getElementById('shift_wish_modal_end_time').value = msToTimeInputValue_(shiftWishContext.end_ms)
+      }
+
+      /**
+       *  希望バー（button）のクリックから、希望シフトモーダルを開く
+       */
+      function handleShiftWishBarClick_(event) {
+        var bar = event.currentTarget
+        shiftWishContext = {
+          wish_id: bar.dataset.wishId,
+          employee_id: bar.dataset.employeeId,
+          employeeName: bar.dataset.employeeName,
+          start_ms: bar.dataset.startMs,
+          end_ms: bar.dataset.endMs,
+          startLabel: bar.dataset.startLabel,
+          endLabel: bar.dataset.endLabel
+        }
+        shiftWishTriggerEl = bar
+        document.getElementById('shift_wish_modal_employee').textContent = shiftWishContext.employeeName
+        document.getElementById('shift_wish_modal_date').textContent = formatBusinessDateHeaderLabel_(currentBusinessDate)
+        document.getElementById('shift_wish_modal_range').textContent = shiftWishContext.startLabel + '〜' + shiftWishContext.endLabel
+        updateShiftWishModalMessage_('')
+        setShiftWishModalButtonsDisabled_(false)
+        applyShiftWishNormalMode_()
+        // モーダルを表示してからラベルを組み立てる（レビュー対応：非表示中の幅計測に注意
+        // 2026-09-16。openShiftEditModal_と同じ理由で、hidden状態のままgetBoundingClientRect()を
+        // 呼ぶと常に0を返し全件「収まらない」と誤判定するため、表示→ラベル組み立て・幅計測→
+        // リサイズ監視開始の順を維持する）
+        document.getElementById('shift_wish_modal').hidden = false
+        // 別の希望バーを開いたときに前の従業員のラベル・展開状態が残らないよう、
+        // renderSkillTags_の冒頭のclearSkillTags_で毎回リセットしてから組み立てる
+        renderSkillTags_(shiftWishSkillTagUI_, shiftWishContext.employee_id)
+        startSkillResizeWatch_(shiftWishSkillTagUI_)
+        document.getElementById('shift_wish_modal_start_time').focus()
+      }
+
+      /**
+       *  レビュー対応（フォーカス復帰の回帰 2026-09-16）: hidden=true設定後、MutationObserverによる
+       *  非同期のinert解除を待たずに、syncAppShellInertForModal_（app_sidebar.html側）を同期的に
+       *  呼んでからfocus()する。詳細はjs_shift.html closeShiftEditModal_のコメントを参照
+       */
+      function closeShiftWishModal_() {
+        if (shiftWishRequestInProgress) return
+        document.getElementById('shift_wish_modal').hidden = true
+        // モーダルを閉じるたびにリサイズ監視を止める（レビュー対応：再表示のたびのイベント登録
+        // 重複に注意 2026-09-16。closeShiftEditModal_と同じ理由・同じ対策）
+        stopSkillResizeWatch_(shiftWishSkillTagUI_)
+        clearSkillTags_(shiftWishSkillTagUI_)
+        updateShiftWishModalMessage_('')
+        shiftWishContext = null
+        if (typeof syncAppShellInertForModal_ === 'function') syncAppShellInertForModal_()
+        if (shiftWishTriggerEl) {
+          shiftWishTriggerEl.focus()
+          shiftWishTriggerEl = null
+        }
+      }
+
+      function handleShiftWishOverlayClick_(event) {
+        if (event.target.id === 'shift_wish_modal') closeShiftWishModal_()
+      }
+
+      /**
+       *  「この時間で勤務登録」ボタン。希望の範囲内で調整した勤務時間をpostShiftEntryFromWishへ送る
+       *  （希望自体の時刻はここでは一切変更しない。勤務時間の調整と希望自体の変更を混同しない）
+       */
+      function handleShiftWishRegisterShift_() {
+        if (!shiftWishContext || shiftWishRequestInProgress) return
+        var startTime = document.getElementById('shift_wish_modal_start_time').value
+        var endTime = document.getElementById('shift_wish_modal_end_time').value
+        if (!startTime || !endTime) {
+          updateShiftWishModalMessage_('開始・終了時刻を入力してください')
+          return
+        }
+
+        shiftWishRequestInProgress = true
+        setShiftWishModalButtonsDisabled_(true)
+        updateShiftWishModalMessage_('登録中...')
+
+        google.script.run
+          .withSuccessHandler(function (message) {
+            shiftWishRequestInProgress = false
+            setShiftWishModalButtonsDisabled_(false)
+            if (message.indexOf('登録しました') !== -1) {
+              closeShiftWishModal_()
+              refreshTimeline()
+              clearJudgeResults()
+            } else {
+              updateShiftWishModalMessage_(message)
+            }
+          })
+          .withFailureHandler(function (error) {
+            shiftWishRequestInProgress = false
+            setShiftWishModalButtonsDisabled_(false)
+            updateShiftWishModalMessage_('登録に失敗しました: ' + error.message)
+          })
+          .postShiftEntryFromWish({
+            wish_id: shiftWishContext.wish_id,
+            employee_id: shiftWishContext.employee_id,
+            start_time: startTime,
+            end_time: endTime
+          })
+      }
+</script>

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <base target="_top">
+    <?!= HtmlService.createHtmlOutputFromFile('css').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_home_common').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_wish_status').getContent(); ?>
+  </head>
+  <body onload="initWishStatusScreen_()">
+    <div class="app-shell">
+    <?!= renderAppSidebar_('wish-status'); ?>
+    <div class="page-container">
+    <header class="app-header">
+      <span class="app-header__eyebrow">freee連携</span>
+      <h1 class="app-header__title">希望シフト提出状況</h1>
+      <p class="app-header__description">対象月の前半・後半ごとに、従業員別の希望シフト提出状況を確認します。表示専用の画面で、ここから希望・勤務は変更できません。</p>
+    </header>
+
+    <div class="card card--feature">
+      <h3>対象期間</h3>
+      <div class="form-grid">
+        <div class="form-field">
+          <label class="form-label" for="wish_status_year_select">対象年</label>
+          <select id="wish_status_year_select" onchange="handleWishStatusPeriodInputChange_()"></select>
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="wish_status_month_select">対象月</label>
+          <select id="wish_status_month_select" onchange="handleWishStatusPeriodInputChange_()"></select>
+        </div>
+        <div class="form-field">
+          <span class="form-label">期間</span>
+          <div class="wish-period-toggle" role="group" aria-label="対象期間">
+            <button type="button" id="wish_status_period_first_btn" class="wish-period-btn" onclick="handleWishStatusPeriodChange_('first_half')">前半（1〜15日）</button>
+            <button type="button" id="wish_status_period_second_btn" class="wish-period-btn" onclick="handleWishStatusPeriodChange_('second_half')">後半（16日〜月末）</button>
+          </div>
+        </div>
+      </div>
+      <div class="wish-status-message-row">
+        <div id="wish_status_message" class="message-area"></div>
+        <button type="button" id="wish_status_retry_btn" class="btn-secondary wish-status-retry-btn" onclick="retryWishStatusLoad_()" hidden>再読み込み</button>
+      </div>
+    </div>
+
+    <div class="card card--feature" id="wish_status_summary_card" hidden>
+      <h3>集計</h3>
+      <dl class="wish-status-counts" id="wish_status_counts" aria-label="提出状況の集計"></dl>
+    </div>
+
+    <div class="card card--feature" id="wish_status_list_card" hidden>
+      <h3>従業員別の状況</h3>
+      <div id="wish_status_employee_list" class="wish-status-list"></div>
+    </div>
+
+    </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,478 @@
+<script>
+
+      /**
+       *  シフト判定ボタンクリック時に発火（別フォームの日付欄は持たず、ナビゲーションの選択値を使う）
+       *  曜日区分はサーバー側でjudge_dateから自動判定するため、クライアントからは送らない
+       *  通信開始時点で連番・対象日を保存し、結果が返った時点でその両方が現在の画面状態と
+       *  一致する場合だけ描画する（日付の変更や連打による取り違えを防ぐ。基準は営業日の日付のみ）
+       *  ここではclearJudgeResults()を呼ばない（呼ぶと直後にjudgeRequestSequenceが増え、
+       *  自分自身のrequestIdを無効化してしまうため。DOMのクリアはこの関数内で直接行う）
+       */
+      function handleJudgeClick() {
+        judgeRequestSequence++
+        var requestId = judgeRequestSequence
+        var requestedBusinessDate = formatDateInputValue_(currentBusinessDate)
+
+        updateJudgeMessage('判定中...')
+        document.getElementById('timeline_judge_track').innerHTML = ''
+        document.getElementById('judge_result_body').innerHTML = ''
+        clearBreakResults_()
+        // 判定結果の要約・「判定結果を見る」ボタン・絞り込みボタン（件数・選択状態）・
+        // 開いている判定詳細モーダルは、判定結果テーブルとは別DOMのため、ここで明示的に
+        // 前回結果を破棄しないと、通信中・通信失敗時に古い件数や要約が残り、古いボタンを押すと
+        // 前回結果が再表示されてしまう。judgeRequestSequenceは既に上で増やしているため、
+        // resetJudgeFilterState_側では連番を増やさない（増やすと通信競合対策の判定式が
+        // 自分自身のrequestIdまで無効化してしまうため）
+        resetJudgeFilterState_()
+
+        google.script.run
+          .withSuccessHandler(function (results) {
+            if (requestId !== judgeRequestSequence) return
+            if (requestedBusinessDate !== formatDateInputValue_(currentBusinessDate)) return
+            renderJudgeResults(results)
+          })
+          .withFailureHandler(function (error) {
+            if (requestId !== judgeRequestSequence) return
+            if (requestedBusinessDate !== formatDateInputValue_(currentBusinessDate)) return
+            updateJudgeMessage('エラー: ' + error.message)
+            resetJudgeFilterState_()
+          })
+          .judgeShiftsForDate({
+            judge_date: requestedBusinessDate
+          })
+      }
+
+      /**
+       *  判定結果をクリアし、「未判定」の状態に戻す（日付・曜日区分の変更、登録成功後に呼ぶ）
+       *  judgeRequestSequenceを増やすことで、進行中の古い判定通信の結果を無効化する
+       */
+      function clearJudgeResults() {
+        judgeRequestSequence++
+        document.getElementById('timeline_judge_track').innerHTML = ''
+        document.getElementById('judge_result_body').innerHTML = ''
+        updateJudgeMessage('この日のシフトを判定してください')
+        clearBreakResults_()
+        resetJudgeFilterState_()
+      }
+
+      // 判定結果一覧の状態別絞り込み（仮説検証用の最小実装）。
+      // 既存の判定結果配列（currentJudgeSlots_）を正データとして保持し、フィルター切り替えのたびに
+      // GASへ再問い合わせしない。既存の判定ロジック・detail_lines等は一切変更せず、
+      // buildJudgeRowDisplay_が返すprimaryLabel/secondaryLabelから分類するだけの表示専用処理。
+      // 不採用になった場合は、このブロックとHTML側のjudge_filter_barを削除すれば元の全件表示に戻る。
+      var currentJudgeFilter_ = 'all' // 'fail' | 'ok' | 'all'
+      var currentJudgeSlots_ = [] // judgeShiftsForDateが最後に返したslots配列（フィルターの正データ）
+
+      /**
+       *  絞り込み状態（正データ・選択中フィルター・ボタン表示）に加え、メイン画面の要約・
+       *  「判定結果を見る」ボタン・判定詳細モーダルもまとめてリセットする共通関数
+       *  judgeRequestSequenceは増やさない（呼び出し元がすでに連番管理をしている場合に、
+       *  自分自身のrequestIdまで無効化してしまう通信競合対策の破壊を避けるため）。
+       *  clearJudgeResults（日付切替・登録成功時、連番は呼び出し元で増加済み）と
+       *  handleJudgeClick（判定開始時、前回結果を即座に破棄したいが連番は自前で管理）の
+       *  両方から呼ぶことで、「古い件数・要約・開いたままのモーダルが残ったまま次の判定結果を待つ」
+       *  状態を作らない。モーダルが開いている最中に再判定が始まった場合は、開いたまま古い内容が
+       *  見えないよう強制的に閉じる（closeJudgeDetailModal_はフォーカスを起点ボタンへ戻そうとするが、
+       *  その起点ボタン自体をこの関数の中で非表示にするため、フォーカス処理より先にモーダルを閉じる）
+       */
+      function resetJudgeFilterState_() {
+        currentJudgeSlots_ = []
+        currentJudgeFilter_ = 'all'
+        renderJudgeFilterButtons_()
+        closeJudgeDetailModal_()
+        document.getElementById('judge_summary').hidden = true
+        document.getElementById('judge_open_detail_btn').hidden = true
+      }
+
+      // 判定の主要な関心を「成立／不成立」の2値に絞るため、絞り込みも3種類（不成立／成立／すべて）にする。
+      // 実効予備（予備あり／予備なし）の分類は削除ではなく非表示化であり、buildJudgeRowDisplay_・
+      // サーバー側の実効予備計算はそのまま残す（4章「表示だけを簡素化する」方針）
+      var JUDGE_FILTER_DEFS_ = [
+        { key: 'fail', label: '不成立' },
+        { key: 'ok', label: '成立' },
+        { key: 'all', label: 'すべて' }
+      ]
+
+      /**
+       *  1時間枠の判定結果（サーバーが返すr）を、絞り込み用の分類キーへ変換する
+       *  buildJudgeRowDisplay_が組み立てるprimaryLabelとそのまま対応させ、分類条件をここで再実装しない
+       */
+      function classifyJudgeSlot_(r) {
+        var display = buildJudgeRowDisplay_(r)
+        return display.primaryLabel === '成立' ? 'ok' : 'fail'
+      }
+
+      function countJudgeSlotsByFilter_(slots) {
+        var counts = { fail: 0, ok: 0, all: slots.length }
+        for (var i = 0; i < slots.length; i++) {
+          counts[classifyJudgeSlot_(slots[i])]++
+        }
+        return counts
+      }
+
+      /**
+       *  初期表示の優先順位：
+       *  1. 不成立が1件以上なら「不成立」
+       *  2. 不成立が0件なら「成立」
+       *  3. 判定結果自体が0件の場合はrenderJudgeResults側で空表示のまま（呼び出し元でslots.length===0を扱う）
+       */
+      function decideInitialJudgeFilter_(counts) {
+        return counts.fail > 0 ? 'fail' : 'ok'
+      }
+
+      /**
+       *  絞り込みボタン（状態別件数の切り替え）を描画する。キーボード操作可能なbutton要素にし、
+       *  選択中のボタンはaria-pressed・専用クラス（枠線・チェック記号）で色以外からも識別できるようにする
+       */
+      function renderJudgeFilterButtons_() {
+        var bar = document.getElementById('judge_filter_bar')
+        bar.innerHTML = ''
+        if (currentJudgeSlots_.length === 0) {
+          bar.hidden = true
+          return
+        }
+        bar.hidden = false
+        var counts = countJudgeSlotsByFilter_(currentJudgeSlots_)
+        for (var i = 0; i < JUDGE_FILTER_DEFS_.length; i++) {
+          var def = JUDGE_FILTER_DEFS_[i]
+          var btn = document.createElement('button')
+          btn.type = 'button'
+          btn.className = 'judge-filter-btn judge-filter-btn--' + def.key
+          var isSelected = currentJudgeFilter_ === def.key
+          btn.classList.toggle('is-selected', isSelected)
+          btn.setAttribute('aria-pressed', isSelected ? 'true' : 'false')
+          btn.textContent = (isSelected ? '✓ ' : '') + def.label + ' ' + counts[def.key] + '件'
+          btn.addEventListener('click', (function (key) {
+            return function () {
+              currentJudgeFilter_ = key
+              renderJudgeFilterButtons_()
+              renderJudgeResultTable_()
+            }
+          })(def.key))
+          bar.appendChild(btn)
+        }
+      }
+
+      var judgeDetailModalTriggerEl = null // モーダルを開いた「判定結果を見る」ボタン。閉じる際にここへフォーカスを戻す
+
+      /**
+       *  判定詳細モーダル表示中だけ、背景ページのスクロールを止めるためのbodyクラス名
+       *  （CSS側で.judge-detail-modal-openにoverflow:hiddenを当てる）。position:fixed等で
+       *  スクロール位置自体をずらす方式は使わないため、クラスを外すだけで元のスクロール位置に戻る。
+       *  シフト変更・削除モーダル（shift_edit_modal）はこのクラスを一切使わないため影響しない
+       */
+      var JUDGE_DETAIL_MODAL_OPEN_BODY_CLASS_ = 'judge-detail-modal-open'
+
+      /**
+       *  判定詳細モーダルを開く。シフト変更・削除モーダル（openShiftEditModal_）と同じ考え方で、
+       *  開いた起点ボタン（judge_open_detail_btn）を覚えておき、閉じる際にフォーカスを戻す
+       *  モーダル内の絞り込みボタン・テーブルは既にrenderJudgeResults側で最新化済みのため、
+       *  ここでは表示状態の切り替えとフォーカス移動だけを行う（再描画はしない＝前回選択中の
+       *  フィルターを維持したまま開き直せる。再判定時はresetJudgeFilterState_が先にモーダルを
+       *  閉じ、renderJudgeResultsが初期選択を再計算してから改めてこの関数で開く）
+       *  開いている間はbodyへクラスを付与し、モーダル内部をスクロールしても背景ページが
+       *  動かないようにする
+       */
+      function openJudgeDetailModal_(triggerEl) {
+        judgeDetailModalTriggerEl = triggerEl
+        document.getElementById('judge_detail_modal').hidden = false
+        document.body.classList.add(JUDGE_DETAIL_MODAL_OPEN_BODY_CLASS_)
+        var closeBtn = document.getElementById('judge_detail_modal_close_btn')
+        closeBtn.focus()
+      }
+
+      /**
+       *  判定詳細モーダルを閉じる。既に閉じている場合は何もしない（resetJudgeFilterState_から
+       *  判定のたびに呼ばれるため、開いていないときにフォーカスを奪わないようにする）
+       *  背景スクロール抑止用のbodyクラスも必ず外し、元の状態・スクロール位置へ戻す
+       */
+      function closeJudgeDetailModal_() {
+        var modal = document.getElementById('judge_detail_modal')
+        if (modal.hidden) return
+        modal.hidden = true
+        document.body.classList.remove(JUDGE_DETAIL_MODAL_OPEN_BODY_CLASS_)
+        if (judgeDetailModalTriggerEl) {
+          judgeDetailModalTriggerEl.focus()
+          judgeDetailModalTriggerEl = null
+        }
+      }
+
+      /**
+       *  「判定結果を見る」ボタンクリック時に発火
+       */
+      function handleOpenJudgeDetailClick_(event) {
+        openJudgeDetailModal_(event.currentTarget)
+      }
+
+      /**
+       *  判定詳細モーダルのオーバーレイ自身をクリックした場合だけ閉じる（モーダル本体のクリックでは閉じない）
+       */
+      function handleJudgeDetailOverlayClick_(event) {
+        if (event.target.id === 'judge_detail_modal') closeJudgeDetailModal_()
+      }
+
+      /**
+       *  1時間枠の判定結果（サーバーが返すr）から、判定詳細テーブルの表示モデルを組み立てる副作用のない関数
+       *  持ち場割当や実効予備をここで再計算せず、既存のstatus・shortage_labels・message_lines・
+       *  detail_lines・present_count・required_count・total_score・standard_scoreだけから表示を決める
+       *  （判定詳細テーブル_UI簡素化_最小仕様.md 4章・5章）。本番描画（renderJudgeResults）と
+       *  自動テストの両方がこの関数を呼ぶことで、表示条件をテスト側へ別実装しない
+       *  主要な判断を「成立／不成立」に絞るため、成立時は予備あり／なしの補助バッジ（secondaryLabel）を
+       *  出さない（空文字。呼び出し側でバッジ要素を追加しない）。実効予備の情報自体はdetailLinesへ残し、
+       *  「詳細を見る」の中でだけ読めるようにする
+       */
+      function buildJudgeRowDisplay_(r) {
+        var primaryLabel = r.status === '成立' ? '成立' : '不成立'
+        var primaryClass = r.status === '成立' ? 'judge-badge-ok' : 'judge-badge-fail'
+
+        var secondaryLabel, secondaryClass, detailLines
+        if (r.status === '成立') {
+          secondaryLabel = ''
+          secondaryClass = ''
+          detailLines = (r.detail_lines && r.detail_lines.length > 0) ? r.detail_lines.slice() : []
+        } else {
+          var isCountShort = r.present_count < r.required_count
+          secondaryLabel = isCountShort ? '人数不足' : '持ち場不足'
+          secondaryClass = 'judge-badge-fail'
+          detailLines = (r.message_lines && r.message_lines.length > 0) ? r.message_lines.slice() : []
+        }
+
+        var scoreNote = '合計スコア: ' + r.total_score + '点／旧基準' + r.standard_score + '点（参考。成立判定には使用していません）'
+
+        return {
+          primaryLabel: primaryLabel,
+          primaryClass: primaryClass,
+          secondaryLabel: secondaryLabel,
+          secondaryClass: secondaryClass,
+          detailLines: detailLines,
+          scoreNote: scoreNote
+        }
+      }
+
+      /**
+       *  1時間枠ごとの判定結果を描画する。時間軸直下の判定行（短いラベル）と、下の詳細テーブル（既存）の両方を更新する
+       *  judgeShiftsForDateの戻り値は{ slots, breaks }のオブジェクト（休憩可能性判定の追加に伴い配列から変更）
+       */
+      function renderJudgeResults(results) {
+        if (results && results.error) {
+          updateJudgeMessage(results.error)
+          clearBreakResults_()
+          resetJudgeFilterState_()
+          return
+        }
+        updateJudgeMessage('')
+        // 合計スコアは参考値であり判定条件から外したため、statusは「不成立」「成立」の2値のみ
+        var statusClass = { '不成立': 'status-fail', '成立': 'status-ok' }
+        var statusLabel = { '不成立': '不成立', '成立': '成立' }
+
+        var slotResults = results.slots
+
+        var judgeTrack = document.getElementById('timeline_judge_track')
+        judgeTrack.innerHTML = ''
+        for (var i = 0; i < slotResults.length; i++) {
+          var r = slotResults[i]
+          var cell = document.createElement('div')
+          cell.className = 'timeline-judge-cell ' + (statusClass[r.status] || '')
+          cell.textContent = statusLabel[r.status] || ''
+          // 時間軸の主要判断は成立／不成立のみ。titleも成立時は予備情報を含めず、
+          // 不成立時のみmessage_lines（人数不足／持ち場不足などの理由）を表示する
+          if (r.status === '成立') {
+            cell.title = r.label + '：成立'
+          } else {
+            var titleLines = (r.message_lines && r.message_lines.length > 0) ? r.message_lines : [r.message]
+            cell.title = r.label + '：不成立（' + titleLines.join('\n') + '）'
+          }
+          judgeTrack.appendChild(cell)
+        }
+
+        // 判定結果一覧（詳細テーブル）の正データを保持し、フィルター切り替え時はここから再描画する
+        // （再判定するまでGASへ再問い合わせしない）。初期表示のフィルターも、ここで新しい結果から決め直す
+        currentJudgeSlots_ = slotResults
+        var counts = countJudgeSlotsByFilter_(slotResults)
+        currentJudgeFilter_ = slotResults.length > 0 ? decideInitialJudgeFilter_(counts) : 'all'
+        renderJudgeFilterButtons_()
+        renderJudgeResultTable_()
+        renderJudgeSummary_(slotResults, counts)
+
+        renderBreakResults_(results.breaks)
+      }
+
+      /**
+       *  メイン画面（判定ボタン付近）に残す、判定結果の短い要約と「判定結果を見る」ボタンを表示する
+       *  詳細な時間帯一覧・説明文はここへ出さず、判定詳細モーダル（renderJudgeResultTable_側）だけに残す
+       *  判定結果が0件の場合は要約を出さない（絞り込みボタンが空表示になるのと同じ扱い）
+       */
+      function renderJudgeSummary_(slotResults, counts) {
+        var summaryEl = document.getElementById('judge_summary')
+        var openBtn = document.getElementById('judge_open_detail_btn')
+        if (!slotResults || slotResults.length === 0) {
+          summaryEl.hidden = true
+          openBtn.hidden = true
+          return
+        }
+        summaryEl.textContent = '不成立' + counts.fail + '件／成立' + counts.ok + '件'
+        summaryEl.hidden = false
+        openBtn.hidden = false
+      }
+
+      /**
+       *  判定結果一覧（詳細テーブル）を、現在のフィルター（currentJudgeFilter_）に従って描画する
+       *  currentJudgeSlots_（直近のjudgeShiftsForDateの結果）を破壊せず、表示のたびに絞り込むだけ
+       */
+      function renderJudgeResultTable_() {
+        var tbody = document.getElementById('judge_result_body')
+        tbody.innerHTML = ''
+
+        var filtered = []
+        for (var i = 0; i < currentJudgeSlots_.length; i++) {
+          var slot = currentJudgeSlots_[i]
+          if (currentJudgeFilter_ === 'all' || classifyJudgeSlot_(slot) === currentJudgeFilter_) {
+            filtered.push(slot)
+          }
+        }
+
+        if (currentJudgeSlots_.length > 0 && filtered.length === 0) {
+          var emptyRow = document.createElement('tr')
+          var emptyTd = document.createElement('td')
+          emptyTd.colSpan = 5
+          emptyTd.className = 'judge-filter-empty'
+          emptyTd.textContent = '該当する時間帯はありません'
+          emptyRow.appendChild(emptyTd)
+          tbody.appendChild(emptyRow)
+          return
+        }
+
+        for (var i2 = 0; i2 < filtered.length; i2++) {
+          var r2 = filtered[i2]
+          var display = buildJudgeRowDisplay_(r2)
+          var tr = document.createElement('tr')
+          // 判定詳細テーブルの行は中立的な背景のままにし、状態の色は判定バッジ側だけで表す
+          // （時間軸セル・休憩結果テーブルの配色には影響させない）
+          var basicCellValues = [
+            r2.label,
+            r2.congestion,
+            r2.present_count + '人 / ' + r2.required_count + '人'
+          ]
+          for (var j2 = 0; j2 < basicCellValues.length; j2++) {
+            var td = document.createElement('td')
+            td.textContent = basicCellValues[j2]
+            tr.appendChild(td)
+          }
+
+          // 判定列：主要表示は成立/不成立のみ。不成立時だけ理由バッジ（人数不足/持ち場不足）を添える
+          // （予備あり/予備なしの補助バッジは出さない。secondaryLabelは成立時に空文字になる）
+          var judgeTd = document.createElement('td')
+          judgeTd.className = 'judge-badge-cell'
+          var primaryBadge = document.createElement('span')
+          primaryBadge.className = 'judge-badge ' + display.primaryClass
+          primaryBadge.textContent = display.primaryLabel
+          judgeTd.appendChild(primaryBadge)
+          if (display.secondaryLabel) {
+            var secondaryBadge = document.createElement('span')
+            secondaryBadge.className = 'judge-badge ' + display.secondaryClass
+            secondaryBadge.textContent = display.secondaryLabel
+            judgeTd.appendChild(secondaryBadge)
+          }
+          tr.appendChild(judgeTd)
+
+          // 詳細列：初期状態で閉じたdetails要素。成立時はdetail_lines（持ち場別内訳）、
+          // 不成立時はmessage_lines（人数不足／持ち場不足／参考情報）を項目別に表示し、
+          // 末尾に参考スコア文を必ず添える。別画面・モーダルへは移動させず同じ行の中で展開する
+          var detailTd = document.createElement('td')
+          detailTd.className = 'judge-message-cell'
+          var details = document.createElement('details')
+          details.className = 'judge-reserve-details'
+          var summary = document.createElement('summary')
+          summary.textContent = '詳細を見る'
+          details.appendChild(summary)
+          if (display.detailLines.length > 0) {
+            var detailUl = document.createElement('ul')
+            detailUl.className = 'judge-message-list'
+            for (var dl2 = 0; dl2 < display.detailLines.length; dl2++) {
+              var detailLi = document.createElement('li')
+              detailLi.textContent = display.detailLines[dl2]
+              detailUl.appendChild(detailLi)
+            }
+            details.appendChild(detailUl)
+          }
+          var scoreNoteEl = document.createElement('p')
+          scoreNoteEl.className = 'judge-score-note'
+          scoreNoteEl.textContent = display.scoreNote
+          details.appendChild(scoreNoteEl)
+          detailTd.appendChild(details)
+          tr.appendChild(detailTd)
+
+          tbody.appendChild(tr)
+        }
+      }
+
+      function clearBreakResults_() {
+        document.getElementById('break_result_body').innerHTML = ''
+        var summaryEl = document.getElementById('break_summary_message')
+        summaryEl.textContent = ''
+        summaryEl.className = 'note'
+      }
+
+      /**
+       *  休憩可能性判定の結果を描画する（既存の1時間枠判定とは別カード・別テーブル）
+       *  「休憩を確保できることを保証する」表現は使わず、当日の判断材料であることが伝わる文言にする
+       *  従業員名・メッセージはtextContentで描画し、innerHTMLへの連結は行わない
+       */
+      function renderBreakResults_(breaks) {
+        var summaryEl = document.getElementById('break_summary_message')
+        var tbody = document.getElementById('break_result_body')
+        tbody.innerHTML = ''
+
+        if (!breaks || breaks.overall_status === 'no_target') {
+          summaryEl.textContent = (breaks && breaks.overall_message) || 'この営業日に休憩が必要な長時間勤務者はいません'
+          summaryEl.className = 'note is-active'
+          return
+        }
+
+        var summaryClass = breaks.overall_status === 'ok' ? 'note is-active status-ok' : 'note is-active status-fail'
+        summaryEl.textContent = breaks.overall_message
+        summaryEl.className = summaryClass
+
+        var statusLabel = { ok: '候補あり', conflict: '候補が重複', no_candidate: '確保困難' }
+        var statusClass = { ok: 'status-ok', conflict: 'status-warn', no_candidate: 'status-fail' }
+
+        for (var i = 0; i < breaks.targets.length; i++) {
+          var t = breaks.targets[i]
+          var tr = document.createElement('tr')
+          tr.className = statusClass[t.status] || ''
+
+          var basicCellValues = [
+            t.employee_name,
+            t.shift_label + '（' + t.duration_hours + '時間）',
+            t.required_minutes + '分',
+            statusLabel[t.status] || t.status
+          ]
+          for (var j = 0; j < basicCellValues.length; j++) {
+            var td = document.createElement('td')
+            td.textContent = basicCellValues[j]
+            tr.appendChild(td)
+          }
+
+          // 「候補・注意」列：人数不足／持ち場不足／参考情報などをサーバーが行単位（detail_lines）で返すため、
+          // 複数行なら箇条書き、1行だけならそのままテキストにする（長い一文への逆戻りを避ける）
+          var detailTd = document.createElement('td')
+          detailTd.className = 'break-detail-cell'
+          var lines = (t.detail_lines && t.detail_lines.length > 0) ? t.detail_lines : [t.note]
+          if (lines.length <= 1) {
+            detailTd.textContent = lines[0] || ''
+          } else {
+            var ul = document.createElement('ul')
+            ul.className = 'break-detail-list'
+            for (var l = 0; l < lines.length; l++) {
+              var li = document.createElement('li')
+              li.textContent = lines[l]
+              ul.appendChild(li)
+            }
+            detailTd.appendChild(ul)
+          }
+          tr.appendChild(detailTd)
+
+          tbody.appendChild(tr)
+        }
+      }
+</script>

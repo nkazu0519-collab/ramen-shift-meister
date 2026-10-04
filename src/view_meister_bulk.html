@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <base target="_top">
+    <?!= HtmlService.createHtmlOutputFromFile('css').getContent(); ?>
+    <script>
+      // https://developers.google.com/apps-script/guides/html/communication#forms
+      function preventFormSubmit() {
+        var forms = document.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+          forms[i].addEventListener('submit', function (event) {
+            event.preventDefault();
+          });
+        }
+      }
+
+      var MEISTER_KEYS = <?!= JSON.stringify(MEISTER_KEYS) ?>;
+      var APP_URL = <?!= JSON.stringify(getAppUrl()) ?>;
+
+      // サーバーから読み込んだ行データ（{employee_id, employee_name, badges}の配列）。
+      // 読込に成功するまではnullのままにし、編集・保存を一切有効にしない
+      // （読込失敗時に空データを保存して全員のマイスターを解除してしまう事故を防ぐ）
+      var currentRows = null;
+      // 変更された従業員だけを employee_id -> {マイスターキー: true/false, ...} で保持する
+      // （サーバーへは変更分だけを送る。表示値と現在の変更内容が一致すれば差分から取り除く）
+      var pendingChanges = {};
+      var isSaving = false;
+      var hasLoaded = false;
+
+      /**
+       *  ページ表示時に一度だけ呼ぶ。読込失敗時は表を描画せず、編集不可のままメッセージだけ出す
+       */
+      function loadMeisterBulkView() {
+        setStatusMessage_('読み込み中...', false);
+        currentRows = null;
+        hasLoaded = false;
+        pendingChanges = {};
+        document.getElementById('meister_bulk_table_body').innerHTML = '';
+        updateSaveBar_();
+        hideSkillPriority_();
+        google.script.run
+          .withSuccessHandler(function (result) {
+            if (!result || !result.success) {
+              handleLoadFailure_(result && result.message);
+              return;
+            }
+            currentRows = result.rows;
+            pendingChanges = {};
+            hasLoaded = true;
+            renderTable_();
+            updateSaveBar_();
+            setStatusMessage_('', false);
+            renderSkillPriority_(result.skill_priority);
+          })
+          .withFailureHandler(function (error) {
+            handleLoadFailure_(error && error.message);
+          })
+          .getMeisterBulkView();
+      }
+
+      /**
+       *  読込に失敗した状態。currentRows・hasLoadedをリセットしたままにすることで、
+       *  「空の表のまま保存して全員のデータを解除してしまう」操作自体をできなくする
+       */
+      function handleLoadFailure_(message) {
+        currentRows = null;
+        hasLoaded = false;
+        pendingChanges = {};
+        document.getElementById('meister_bulk_table_body').innerHTML = '';
+        setStatusMessage_(
+          '読み込みに失敗しました。表は表示していません（' + (message || '不明なエラー') + '）。再読み込みボタンでやり直してください',
+          true
+        );
+        updateSaveBar_();
+        hideSkillPriority_();
+      }
+
+      /**
+       *  技能別の育成優先度（07_ブラッシュアップ/02_企画・設計/技能別育成優先度_最小仕様.md）。
+       *  getMeisterBulkView()が同じ取得結果から返すskill_priorityをそのまま描画するだけで、
+       *  技能ごとの追加通信は行わない。初期表示・読込失敗・通信失敗のいずれでも
+       *  loadMeisterBulkView()の先頭でhideSkillPriority_()を呼ぶため、古い集計を最新として残さない
+       */
+      function hideSkillPriority_() {
+        var section = document.getElementById('meister_skill_priority');
+        section.hidden = true;
+        document.getElementById('meister_skill_priority_list').innerHTML = '';
+      }
+
+      function renderSkillPriority_(skillPriority) {
+        var listEl = document.getElementById('meister_skill_priority_list');
+        listEl.innerHTML = '';
+        if (!skillPriority || !Array.isArray(skillPriority)) {
+          hideSkillPriority_();
+          return;
+        }
+        for (var i = 0; i < skillPriority.length; i++) {
+          listEl.appendChild(buildSkillPriorityCard_(skillPriority[i]));
+        }
+        document.getElementById('meister_skill_priority').hidden = false;
+      }
+
+      function buildSkillPriorityCard_(skill) {
+        var card = document.createElement('div');
+        card.className = 'skill-priority-card skill-priority-card--' + skill.status;
+
+        var nameEl = document.createElement('div');
+        nameEl.className = 'skill-priority-card__name';
+        nameEl.textContent = skill.key;
+        card.appendChild(nameEl);
+
+        var statusEl = document.createElement('div');
+        statusEl.className = 'skill-priority-card__status';
+        statusEl.textContent = skill.status === 'multiple'
+          ? skill.status_label
+          : skill.status_label + '（' + skill.holder_count + '人）';
+        card.appendChild(statusEl);
+
+        // 育成候補提示（07_ブラッシュアップ/02_企画・設計/育成候補提示_最小仕様.md）：
+        // 「担当者なし（0人）」「一人依存・育成優先（1人）」の技能だけにボタンを出す。
+        // 2人以上（multiple）には出さない。押すまで勤怠APIは呼ばない（openTrainingCandidateModal_側で開始する）
+        if (skill.status === 'none' || skill.status === 'single') {
+          var candidateBtn = document.createElement('button');
+          candidateBtn.type = 'button';
+          candidateBtn.className = 'nav-btn-small skill-priority-card__candidate-btn';
+          candidateBtn.textContent = '育成候補を見る';
+          candidateBtn.addEventListener('click', function () {
+            openTrainingCandidateModal_(skill.key, candidateBtn);
+          });
+          card.appendChild(candidateBtn);
+        }
+
+        return card;
+      }
+
+      /**
+       *  育成候補モーダル（07_ブラッシュアップ/02_企画・設計/育成候補提示_最小仕様.md）。
+       *  「育成候補を見る」を押すまでgetMeisterTrainingCandidatesは呼ばない（ページ初期表示では勤怠APIを呼ばない）。
+       *  リクエスト連番（trainingModalRequestSeq_）を持ち、年月を連続変更した場合の
+       *  古い応答を無視する。モーダルを閉じた後に遅い応答が返ってもtrainingModalOpen_がfalseなら描画しない
+       *
+       *  月単位化（2026-09-24、実機確認での判断）：育成は半月単位で判断するものではなく、
+       *  前半・後半を切り替える意味が分かりにくいと判断したため、このモーダルだけ前半・後半の
+       *  選択を廃止し、年月だけを選ぶ形にした（このファイルのWISH_PERIOD_FIRST_HALF・
+       *  WISH_PERIOD_SECOND_HALF・setTrainingModalPeriodInputs_・getTrainingModalPeriod_は削除した）。
+       *  希望提出画面・提出状況画面が使う前半・後半の締切仕様自体（business_day.gsの
+       *  WISH_PERIOD_FIRST_HALF_・WISH_PERIOD_SECOND_HALF_）は変更していない
+       */
+      var trainingModalOpen_ = false;
+      var trainingModalSkillKey_ = null;
+      var trainingModalTriggerEl_ = null;
+      var trainingModalRequestSeq_ = 0;
+
+      /**
+       *  初期対象月（最小仕様3章、月単位化後）：当日が1〜15日なら当月、16日以降なら翌月。
+       *  年跨ぎ（12月→翌年1月）も正しく処理する。現在時刻はクライアント環境のnew Date()を使う
+       *  （画面を開いた本人のローカル日付。サーバー側の再検証はisValidWishYearMonth_で行う）
+       */
+      function resolveInitialTrainingMonth_(nowDate) {
+        var y = nowDate.getFullYear();
+        var m = nowDate.getMonth() + 1; // 1-12
+        var d = nowDate.getDate();
+        if (d <= 15) {
+          return { year: y, month: m };
+        }
+        var nextMonthDate = new Date(y, m, 1); // m(0始まりでの翌月) = 現在月の翌月
+        return { year: nextMonthDate.getFullYear(), month: nextMonthDate.getMonth() + 1 };
+      }
+
+      /**
+       *  モーダルを開く。対象技能名・初期対象月をセットしてから候補取得を開始する。
+       *  triggerElは「育成候補を見る」ボタン（閉じる際にフォーカスを戻す先）
+       */
+      function openTrainingCandidateModal_(skillKey, triggerEl) {
+        trainingModalOpen_ = true;
+        trainingModalSkillKey_ = skillKey;
+        trainingModalTriggerEl_ = triggerEl;
+
+        var initial = resolveInitialTrainingMonth_(new Date());
+        document.getElementById('training_modal_title').textContent = skillKey + 'の育成候補';
+        document.getElementById('training_modal_year').value = String(initial.year);
+        document.getElementById('training_modal_month').value = String(initial.month);
+
+        document.getElementById('training_modal').hidden = false;
+        document.getElementById('training_modal_close_btn').focus();
+
+        fetchTrainingCandidates_();
+      }
+
+      /**
+       *  モーダルを閉じる。閉じた後に遅れて届く応答はtrainingModalOpen_がfalseになることで無視される
+       *  （fetchTrainingCandidates_の応答ハンドラ側で確認する）。開いたボタンへフォーカスを戻す
+       */
+      function closeTrainingCandidateModal_() {
+        document.getElementById('training_modal').hidden = true;
+        trainingModalOpen_ = false;
+        trainingModalSkillKey_ = null;
+        if (trainingModalTriggerEl_) {
+          trainingModalTriggerEl_.focus();
+          trainingModalTriggerEl_ = null;
+        }
+      }
+
+      function handleTrainingModalOverlayClick_(event) {
+        if (event.target.id === 'training_modal') closeTrainingCandidateModal_();
+      }
+
+      /**
+       *  年月の変更時に呼ぶ（onchange）。候補を再取得する
+       */
+      function handleTrainingModalMonthChange_() {
+        fetchTrainingCandidates_();
+      }
+
+      function handleTrainingModalReloadClick_() {
+        fetchTrainingCandidates_();
+      }
+
+      /**
+       *  育成候補を取得する。呼ぶたびにリクエスト連番を進め、古い候補一覧を消してから読み込み表示にする
+       *  （選択月と古い候補結果が混ざらないようにする）。応答が返った時点で連番が最新でなければ
+       *  （その間に別の年月変更やモーダルを閉じる操作があった場合）結果を破棄する
+       */
+      function fetchTrainingCandidates_() {
+        var year = Number(document.getElementById('training_modal_year').value);
+        var month = Number(document.getElementById('training_modal_month').value);
+
+        trainingModalRequestSeq_++;
+        var requestSeq = trainingModalRequestSeq_;
+
+        document.getElementById('training_modal_list').innerHTML = '';
+        document.getElementById('training_modal_empty').hidden = true;
+        document.getElementById('training_modal_error').hidden = true;
+        document.getElementById('training_modal_loading').hidden = false;
+
+        google.script.run
+          .withSuccessHandler(function (result) {
+            handleTrainingCandidatesResult_(result, requestSeq);
+          })
+          .withFailureHandler(function (error) {
+            handleTrainingCandidatesResult_({ success: false, message: error && error.message }, requestSeq);
+          })
+          .getMeisterTrainingCandidates(trainingModalSkillKey_, year, month);
+      }
+
+      /**
+       *  候補取得の応答処理。古い応答（連番不一致）・モーダルが閉じられた後の応答は描画しない
+       */
+      function handleTrainingCandidatesResult_(result, requestSeq) {
+        if (requestSeq !== trainingModalRequestSeq_) return; // 年月を連続変更した際の古い応答
+        if (!trainingModalOpen_) return; // 閉じた後に届いた遅い応答
+
+        document.getElementById('training_modal_loading').hidden = true;
+
+        if (!result || !result.success) {
+          document.getElementById('training_modal_error').hidden = false;
+          document.getElementById('training_modal_error_message').textContent =
+            (result && result.message) || '育成候補の取得に失敗しました';
+          document.getElementById('training_modal_reload_hint').hidden = !(result && result.needs_reload);
+          return;
+        }
+
+        renderTrainingCandidates_(result.candidates || []);
+      }
+
+      /**
+       *  取得済みの候補一覧を描画する。0人の場合は「対象技能を持っていない在籍従業員はいません」と表示する
+       */
+      function renderTrainingCandidates_(candidates) {
+        var listEl = document.getElementById('training_modal_list');
+        listEl.innerHTML = '';
+        if (candidates.length === 0) {
+          document.getElementById('training_modal_empty').hidden = false;
+          return;
+        }
+        document.getElementById('training_modal_empty').hidden = true;
+        for (var i = 0; i < candidates.length; i++) {
+          listEl.appendChild(buildTrainingCandidateRow_(candidates[i]));
+        }
+      }
+
+      function buildTrainingCandidateRow_(candidate) {
+        var row = document.createElement('div');
+        row.className = 'training-candidate-row';
+
+        var nameEl = document.createElement('div');
+        nameEl.className = 'training-candidate-row__name';
+        nameEl.textContent = candidate.employee_name;
+        row.appendChild(nameEl);
+
+        var avgEl = document.createElement('div');
+        avgEl.className = 'training-candidate-row__detail';
+        avgEl.textContent = '直近3か月の月平均勤務日数：'
+          + (candidate.average_work_days === null || candidate.average_work_days === undefined
+            ? '取得できません'
+            : candidate.average_work_days + '日');
+        row.appendChild(avgEl);
+
+        var wishEl = document.createElement('div');
+        wishEl.className = 'training-candidate-row__detail';
+        wishEl.textContent = '対象月の希望日数：' + candidate.wish_day_count + '日';
+        row.appendChild(wishEl);
+
+        return row;
+      }
+
+      document.addEventListener('keydown', function (event) {
+        if (event.key !== 'Escape') return;
+        if (!trainingModalOpen_) return;
+        closeTrainingCandidateModal_();
+      });
+
+      function setStatusMessage_(text, isError) {
+        var el = document.getElementById('meister_bulk_status');
+        el.textContent = text;
+        el.className = text ? (isError ? 'note is-active status-fail' : 'note is-active') : 'note';
+      }
+
+      function renderTable_() {
+        var tbody = document.getElementById('meister_bulk_table_body');
+        tbody.innerHTML = '';
+        for (var i = 0; i < currentRows.length; i++) {
+          var row = currentRows[i];
+          tbody.appendChild(buildRowElement_(row));
+        }
+      }
+
+      function buildRowElement_(row) {
+        var tr = document.createElement('tr');
+        tr.dataset.employeeId = row.employee_id;
+
+        var nameTd = document.createElement('td');
+        nameTd.className = 'meister-bulk-name-cell';
+        var nameLink = document.createElement('a');
+        nameLink.href = APP_URL + '?empId=' + encodeURIComponent(row.employee_id);
+        nameLink.textContent = row.employee_name;
+        nameTd.appendChild(nameLink);
+        tr.appendChild(nameTd);
+
+        for (var k = 0; k < MEISTER_KEYS.length; k++) {
+          var key = MEISTER_KEYS[k];
+          var td = document.createElement('td');
+          td.className = 'meister-bulk-cell';
+          var checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.checked = !!row.badges[key];
+          checkbox.dataset.employeeId = row.employee_id;
+          checkbox.dataset.meisterKey = key;
+          checkbox.addEventListener('change', handleCheckboxChange_);
+          td.appendChild(checkbox);
+          tr.appendChild(td);
+        }
+        return tr;
+      }
+
+      /**
+       *  チェックボックス変更時。表示中の全行から、現在の初期値と異なる従業員だけをpendingChangesへ残す
+       *  （元の状態へ戻したセルはpendingChangesから消える。「変更なしなら保存ボタンを無効にする」の判定を単純にするため）
+       */
+      function handleCheckboxChange_() {
+        var empId = this.dataset.employeeId;
+        recomputeChangeForEmployee_(empId);
+        updateSaveBar_();
+      }
+
+      function findRowByEmployeeId_(empId) {
+        for (var i = 0; i < currentRows.length; i++) {
+          if (String(currentRows[i].employee_id) === String(empId)) return currentRows[i];
+        }
+        return null;
+      }
+
+      function recomputeChangeForEmployee_(empId) {
+        var originalRow = findRowByEmployeeId_(empId);
+        if (!originalRow) return;
+        var tr = document.querySelector('tr[data-employee-id="' + cssEscape_(empId) + '"]');
+        if (!tr) return;
+
+        var currentBadges = {};
+        var changed = false;
+        var checkboxes = tr.querySelectorAll('input[type="checkbox"]');
+        for (var i = 0; i < checkboxes.length; i++) {
+          var cb = checkboxes[i];
+          var key = cb.dataset.meisterKey;
+          currentBadges[key] = cb.checked;
+          if (!!originalRow.badges[key] !== cb.checked) changed = true;
+        }
+
+        if (changed) {
+          pendingChanges[empId] = currentBadges;
+        } else {
+          delete pendingChanges[empId];
+        }
+      }
+
+      // CSS.escapeが使えない実行環境を考慮し、属性セレクタに使う値を最小限エスケープする
+      function cssEscape_(value) {
+        return String(value).replace(/["\\]/g, '\\$&');
+      }
+
+      function updateSaveBar_() {
+        var count = Object.keys(pendingChanges).length;
+        var countEl = document.getElementById('meister_bulk_change_count');
+        countEl.textContent = count > 0 ? count + '人分の変更があります' : '変更はありません';
+        var saveBtn = document.getElementById('meister_bulk_save_btn');
+        saveBtn.disabled = !hasLoaded || isSaving || count === 0;
+      }
+
+      /**
+       *  保存ボタンクリック時。変更された従業員だけをサーバーへ送る。二重送信防止のため送信中はボタンを無効化する
+       */
+      function handleSaveClick() {
+        var employeeIds = Object.keys(pendingChanges);
+        if (employeeIds.length === 0 || isSaving) return;
+
+        var changes = employeeIds.map(function (empId) {
+          return { employee_id: empId, badges: pendingChanges[empId] };
+        });
+
+        isSaving = true;
+        document.getElementById('meister_bulk_save_btn').disabled = true;
+        setStatusMessage_('保存中...', false);
+
+        google.script.run
+          .withSuccessHandler(function (result) {
+            isSaving = false;
+            if (!result || !result.success) {
+              setStatusMessage_('保存に失敗しました：' + (result && result.message ? result.message : '不明なエラー'), true);
+              updateSaveBar_();
+              return;
+            }
+            var warningText = result.warnings && result.warnings.length > 0
+              ? '（' + result.warnings.join('／') + '）'
+              : '';
+            setStatusMessage_(result.message + warningText, false);
+            // 保存成功後はサーバーから最新状態を再取得し、変更件数を0へ戻す
+            loadMeisterBulkView();
+          })
+          .withFailureHandler(function (error) {
+            isSaving = false;
+            setStatusMessage_('保存に失敗しました：' + (error && error.message ? error.message : '不明なエラー'), true);
+            updateSaveBar_();
+          })
+          .saveMeisterBulkChanges({ changes: changes });
+      }
+
+      /**
+       *  未保存の変更がある状態でページを離れようとした場合に確認を出す
+       *  （保存成功直後はloadMeisterBulkViewでpendingChangesを空にするため確認は出ない）
+       */
+      window.addEventListener('beforeunload', function (event) {
+        if (Object.keys(pendingChanges).length === 0) return;
+        event.preventDefault();
+        event.returnValue = '';
+      });
+
+      /**
+       *  再読み込みボタン。未保存の変更がある場合は破棄してよいか確認してから読み直す
+       */
+      function handleReloadClick() {
+        if (Object.keys(pendingChanges).length > 0) {
+          var confirmed = window.confirm('保存していない変更があります。破棄して読み直しますか？');
+          if (!confirmed) return;
+        }
+        loadMeisterBulkView();
+      }
+
+      window.addEventListener('load', function () {
+        preventFormSubmit();
+        loadMeisterBulkView();
+      });
+    </script>
+  </head>
+  <body>
+    <div class="app-shell">
+    <?!= renderAppSidebar_('meister'); ?>
+    <div class="page-container">
+      <header class="app-header">
+        <span class="app-header__eyebrow">freee連携</span>
+        <h1 class="app-header__title">マイスター一括管理</h1>
+        <p class="app-header__description">従業員ごとの取得状況を一画面で確認し、変更した分だけまとめて保存します。</p>
+      </header>
+
+      <div id="meister_skill_priority" class="card card--feature" hidden>
+        <h3>技能別の育成優先度</h3>
+        <p class="note">保存済みの取得状況を集計しています。変更は保存後に反映されます。</p>
+        <div id="meister_skill_priority_list" class="skill-priority-list"></div>
+      </div>
+
+      <div class="card card--feature">
+        <h3>取得状況</h3>
+        <div class="btn-frame">
+          <button type="button" class="nav-btn-small" onclick="handleReloadClick()">再読み込み</button>
+        </div>
+        <div id="meister_bulk_status" class="note"></div>
+        <p class="note">氏名をクリックすると、その従業員の個別マイスター画面に移動します。</p>
+        <div class="table-scroll table-scroll--meister-bulk" tabindex="0">
+          <table class="meister-bulk-table">
+            <thead>
+              <tr>
+                <th class="meister-bulk-name-cell">氏名</th>
+                <?
+                  for (var mk = 0; mk <= MEISTER_KEYS.length - 1; mk++) {
+                ?>
+                <th><?= MEISTER_KEYS[mk] ?></th>
+                <? } ?>
+              </tr>
+            </thead>
+            <tbody id="meister_bulk_table_body"></tbody>
+          </table>
+        </div>
+        <div class="form-actions">
+          <div id="meister_bulk_change_count" class="note">変更はありません</div>
+          <button type="button" id="meister_bulk_save_btn" class="btn" onclick="handleSaveClick()" disabled>変更を保存</button>
+        </div>
+      </div>
+    </div>
+    </div>
+
+    <!-- 育成候補モーダル（07_ブラッシュアップ/02_企画・設計/育成候補提示_最小仕様.md）。
+         judge_detail_modalと同じ.modal-header＋.modal-body-scroll構成にし、候補が多い場合は
+         本文だけをスクロールさせる。背景クリック・Escape・閉じるボタンのいずれでも閉じられ、
+         閉じたら開いた「育成候補を見る」ボタンへフォーカスを戻す -->
+    <div id="training_modal" class="modal-overlay" hidden onclick="handleTrainingModalOverlayClick_(event)">
+      <div class="modal modal--form-scroll modal--training-candidate" role="dialog" aria-modal="true" aria-labelledby="training_modal_title">
+        <div class="modal-header">
+          <h3 id="training_modal_title">育成候補</h3>
+          <button type="button" id="training_modal_close_btn" class="modal-close-btn" onclick="closeTrainingCandidateModal_()" aria-label="閉じる">×</button>
+        </div>
+        <div class="modal-body-scroll">
+          <p class="note">勤務頻度は判断材料の一つです。やる気・適性を含む最終判断は店主が行ってください。</p>
+
+          <div class="training-modal-period-row">
+            <label class="form-label" for="training_modal_year">対象年月</label>
+            <div class="training-modal-period-inputs">
+              <input type="number" id="training_modal_year" min="2000" max="2100" step="1" onchange="handleTrainingModalMonthChange_()">
+              <span>年</span>
+              <input type="number" id="training_modal_month" min="1" max="12" step="1" onchange="handleTrainingModalMonthChange_()">
+              <span>月</span>
+            </div>
+            <button type="button" class="nav-btn-small" onclick="handleTrainingModalReloadClick_()">再読み込み</button>
+          </div>
+
+          <div id="training_modal_loading" class="note" hidden>読み込み中...</div>
+          <div id="training_modal_error" class="note status-fail" hidden>
+            <span id="training_modal_error_message"></span>
+            <span id="training_modal_reload_hint" hidden>（技能別育成優先度の画面を再読み込みしてください）</span>
+          </div>
+          <div id="training_modal_empty" class="note" hidden>対象技能を持っていない在籍従業員はいません</div>
+          <div id="training_modal_list" class="training-candidate-list"></div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

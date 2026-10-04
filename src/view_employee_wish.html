@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <base target="_top">
+    <?!= HtmlService.createHtmlOutputFromFile('css').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_home_common').getContent(); ?>
+    <?!= HtmlService.createHtmlOutputFromFile('js_employee_wish').getContent(); ?>
+  </head>
+  <body onload="initEmployeeWishScreen_()">
+    <div class="app-shell">
+    <?!= renderAppSidebar_('wish'); ?>
+    <div class="page-container">
+    <header class="app-header">
+      <span class="app-header__eyebrow">freee連携</span>
+      <h1 class="app-header__title">希望シフト提出</h1>
+      <p class="app-header__description">対象月の前半・後半ごとに、複数の日へまとめて希望時間または出勤不可を設定し、カレンダーで確認してから提出します。</p>
+    </header>
+
+    <!-- 【本人が明示を指示した確認用画面の注記】ログイン・本人認証ではないことをここで必ず示す -->
+    <div class="wish-demo-notice">確認用画面です。従業員選択はログインではありません。</div>
+
+    <div class="card card--feature">
+      <h3>対象従業員・対象期間</h3>
+      <div class="form-grid">
+        <div class="form-field">
+          <label class="form-label" for="wish_employee_select">従業員<span class="form-required">必須</span></label>
+          <select id="wish_employee_select" onchange="handleWishEmployeeChange_()">
+            <option value="">選択してください</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="wish_year_select">対象年</label>
+          <select id="wish_year_select" onchange="handleWishPeriodInputChange_()"></select>
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="wish_month_select">対象月</label>
+          <select id="wish_month_select" onchange="handleWishPeriodInputChange_()"></select>
+        </div>
+        <div class="form-field">
+          <span class="form-label">期間</span>
+          <div class="wish-period-toggle" role="group" aria-label="対象期間">
+            <button type="button" id="wish_period_first_btn" class="wish-period-btn" onclick="handleWishPeriodChange_('first_half')">前半（1〜15日）</button>
+            <button type="button" id="wish_period_second_btn" class="wish-period-btn" onclick="handleWishPeriodChange_('second_half')">後半（16日〜月末）</button>
+          </div>
+        </div>
+      </div>
+      <p class="note" id="wish_deadline_note"></p>
+      <div id="wish_period_message" class="message-area"></div>
+    </div>
+
+    <div class="card card--feature" id="wish_editor_card" hidden>
+      <h3>選択日への一括設定</h3>
+      <p class="note">カレンダーで複数の日付を選び、時間または出勤不可を選んで「選択日へ適用」を押すと、カレンダー上に「未提出」の内容として反映されます（まだサーバーへは保存されません）。別の日付群を選び直して、続けて別の内容を設定できます。勤務登録済みの日は内容を確認できますが、この画面からは変更できません。変更は店主へ相談してください。</p>
+
+      <div class="wish-calendar" id="wish_calendar" role="group" aria-label="対象期間の日付"></div>
+
+      <div class="wish-apply-panel">
+        <div class="form-grid">
+          <div class="form-field">
+            <span class="form-label">設定する内容</span>
+            <div class="wish-answer-toggle" role="group" aria-label="設定する内容">
+              <button type="button" id="wish_answer_time_btn" class="wish-answer-btn is-selected" onclick="handleWishAnswerTypeChange_('時間希望')">時間を指定</button>
+              <button type="button" id="wish_answer_unavailable_btn" class="wish-answer-btn" onclick="handleWishAnswerTypeChange_('出勤不可')">出勤不可</button>
+            </div>
+          </div>
+          <div class="form-field" id="wish_apply_start_field">
+            <label class="form-label" for="wish_apply_start_time">開始時刻</label>
+            <input type="time" id="wish_apply_start_time" step="3600">
+          </div>
+          <div class="form-field" id="wish_apply_end_field">
+            <label class="form-label" for="wish_apply_end_time">終了時刻</label>
+            <input type="time" id="wish_apply_end_time" step="3600">
+          </div>
+        </div>
+        <p class="form-help">開始・終了は毎時0分（1時間単位）、最低3時間、対象営業日11:00〜翌3:00と重なる範囲で入力してください。</p>
+        <div id="wish_apply_message" class="message-area"></div>
+        <button type="button" class="btn" id="wish_apply_btn" onclick="handleWishApplyToSelectedDates_()">選択日へ適用</button>
+      </div>
+
+      <div class="wish-submit-panel">
+        <p class="note">カレンダー上で「未提出」と表示された内容を確認し、よければ提出してください。</p>
+        <div id="wish_submit_message" class="message-area"></div>
+        <button type="button" class="btn" id="wish_submit_btn" onclick="handleWishSubmitBulk_()" disabled>まとめて提出</button>
+      </div>
+    </div>
+
+    </div>
+    </div>
+  </body>
+</html>

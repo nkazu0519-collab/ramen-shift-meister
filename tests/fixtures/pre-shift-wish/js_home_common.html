@@ -1,0 +1,86 @@
+<script>
+      // https://developers.google.com/apps-script/guides/html/communication#forms
+      function preventFormSubmit() {
+        var forms = document.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) {
+          forms[i].addEventListener('submit', function(event) {
+            event.preventDefault();
+          });
+        }
+      }
+
+      var WEEKDAY_LABELS_ = ['日', '月', '火', '水', '木', '金', '土']
+      var currentBusinessDate // 選択中の営業日（Dateオブジェクト。時刻は0時に揃える）
+      var currentDayType = '' // 営業日区分（平日／休日前／休日）。サーバーの自動判定結果だけで更新する
+      var timelineRequestSequence = 0 // 時間軸取得の連番。古い通信結果の描画を防ぐ
+      var judgeRequestSequence = 0 // 判定通信の連番。古い通信結果の描画を防ぐ
+      var businessDayTypeRequestSequence = 0 // 営業日区分の自動判定通信の連番。古い通信結果の描画を防ぐ
+      var businessDayTypeReady = false // 自動判定が成功しcurrentDayTypeが確定しているか（登録・判定ボタンの活性制御に使う）
+
+      function pad2_(n) {
+        return n < 10 ? '0' + n : String(n)
+      }
+
+      /**
+       *  DateをGASのparseFormDate_と対応する"YYYY-MM-DD"文字列にする（date inputへのセットにも使う）
+       */
+      function formatDateInputValue_(dateObj) {
+        return dateObj.getFullYear() + '-' + pad2_(dateObj.getMonth() + 1) + '-' + pad2_(dateObj.getDate())
+      }
+
+      /**
+       *  "YYYY-MM-DD"をローカル日付のDateにする（new Date(文字列)はUTC解釈で日付がずれるため使わない）
+       */
+      function parseLocalDateStr_(dateStr) {
+        var parts = dateStr.split('-')
+        return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+      }
+
+      function formatBusinessDateHeaderLabel_(dateObj) {
+        return dateObj.getFullYear() + '年' + (dateObj.getMonth() + 1) + '月' + dateObj.getDate() + '日（' + WEEKDAY_LABELS_[dateObj.getDay()] + '）'
+      }
+
+      /**
+       *  ナビゲーションの表示・シフト登録フォームの「対象営業日」表示を、現在の営業日に合わせる
+       *  登録フォームには編集可能な日付入力を置かず、この読み取り専用表示と隠しフィールド
+       *  （shift_business_date_hidden）を、日付ナビゲーションの操作すべてに追従させる
+       *  （前日・翌日・日付選択・今日へ戻るは、いずれもcurrentBusinessDateを更新してから
+       *  onBusinessDateChanged経由でこの関数を呼ぶため、上部と登録先が常に一致する）
+       */
+      function syncNavDisplay() {
+        document.getElementById('business_date_input').value = formatDateInputValue_(currentBusinessDate)
+        document.getElementById('business_date_label').textContent = formatBusinessDateHeaderLabel_(currentBusinessDate)
+        document.getElementById('shift_target_date_display').textContent = '対象営業日：' + formatBusinessDateHeaderLabel_(currentBusinessDate)
+        document.getElementById('shift_business_date_hidden').value = formatDateInputValue_(currentBusinessDate)
+      }
+
+      function updateShiftMessage(message) {
+        document.getElementById('shift_submit_message').textContent = message
+      }
+
+      function updateBusinessDayTypeDisplay_(text, isError) {
+        var el = document.getElementById('business_day_type_display')
+        el.textContent = text
+        el.classList.toggle('is-error', !!isError)
+      }
+
+      /**
+       *  自動判定が完了(成功)するまでは、シフト登録・「この日のシフトを判定」ボタンを押せないようにする
+       */
+      function updateActionButtonsEnabled_() {
+        document.getElementById('shift_submit_btn').disabled = !businessDayTypeReady
+        document.getElementById('judge_btn').disabled = !businessDayTypeReady
+      }
+
+      function updateTimelineMessage(message) {
+        var el = document.getElementById('timeline_message')
+        el.textContent = message
+        el.classList.toggle('is-active', !!message)
+      }
+
+      function updateJudgeMessage(message) {
+        var el = document.getElementById('judge_message')
+        el.textContent = message
+        el.classList.toggle('is-active', !!message)
+      }
+</script>

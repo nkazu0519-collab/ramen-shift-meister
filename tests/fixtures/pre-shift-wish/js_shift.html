@@ -1,0 +1,407 @@
+<script>
+
+      /**
+       *  シフト予定の登録ボタンクリック時に発火
+       */
+      function handleShiftFormSubmit(formObject) {
+        updateShiftMessage('登録中...')
+        google.script.run
+          .withSuccessHandler(function (message) {
+            updateShiftMessage(message)
+            // postShiftEntryの成功文言は「登録しました」（通常追加）と
+            // 「既存シフトとつなげて…登録しました」（隣接結合）の2種類があるため、
+            // 完全一致ではなく「登録しました」を含むかで判定する。入力エラー・重複エラーは含まない
+            if (message.indexOf('登録しました') !== -1) {
+              refreshTimeline()
+              clearJudgeResults()
+            }
+          })
+          .withFailureHandler(function (error) {
+            updateShiftMessage('エラー: ' + error.message)
+          })
+          .postShiftEntry(formObject)
+        return false
+      }
+
+      function findEmployeeById_(empId) {
+        for (var i = 0; i < employees.length; i++) {
+          if (String(employees[i].id) === String(empId)) return employees[i]
+        }
+        return null
+      }
+
+      function clearSkillCard_(card) {
+        while (card.firstChild) {
+          card.removeChild(card.firstChild)
+        }
+      }
+
+      function addSkillCardText_(card, text, className) {
+        var p = document.createElement('p')
+        if (className) p.className = className
+        p.textContent = text
+        card.appendChild(p)
+      }
+
+      /**
+       *  シフト登録フォームの従業員selectのchangeで発火。ページ表示時に1回だけ取得したmaisterSummariesを
+       *  参照するだけで、選択のたびにgoogle.script.runでは通信しない
+       */
+      function handleShiftEmployeeChange(selectEl) {
+        updateEmployeeSkillCard_(selectEl.value)
+      }
+
+      /**
+       *  選択した従業員の取得マイスター・技能点を、フォーム内の補足カードへ表示する
+       *  未選択・登録済み（技能あり/なし）・マイスターマスタ未登録・概要データ取得不可の状態を扱う
+       *  表示内容はすべてtextContent／createElementで組み立て、innerHTMLへは何も入れない
+       */
+      function updateEmployeeSkillCard_(empId) {
+        var card = document.getElementById('employee_skill_card')
+        clearSkillCard_(card)
+
+        if (!empId) {
+          addSkillCardText_(card, '従業員を選択すると、取得マイスターと技能点が表示されます', 'skill-card__guide')
+          return
+        }
+
+        if (!maisterSummaries || typeof maisterSummaries !== 'object') {
+          // 想定外にマイスター概要が取得できていない場合。フォーム自体は使えるようにし、ここだけ案内を出す
+          addSkillCardText_(card, '技能情報を取得できませんでした。画面を再読み込みしてください', 'skill-card__empty')
+          return
+        }
+
+        var emp = findEmployeeById_(empId)
+        var nameEl = document.createElement('p')
+        nameEl.className = 'skill-card__name'
+        nameEl.textContent = emp ? emp.display_name : '選択した従業員'
+        card.appendChild(nameEl)
+
+        var summary = Object.prototype.hasOwnProperty.call(maisterSummaries, String(empId))
+          ? maisterSummaries[String(empId)]
+          : null
+
+        // 1. マイスターマスタに対象従業員の行がない（=未登録）場合。registeredで判定する
+        if (!summary || !summary.registered) {
+          addSkillCardText_(card, 'マイスター情報が登録されていません', 'skill-card__empty')
+          addSkillCardText_(card, 'マイスター管理から登録してください', 'skill-card__hint')
+          return
+        }
+
+        // 2. 行はある（登録済み）が、取得済みマイスターが0件の場合。未登録とは別の表示にする
+        if (summary.acquired_meisters.length === 0) {
+          addSkillCardText_(card, '取得済みマイスターはありません', 'skill-card__empty')
+
+          var zeroScoreEl = document.createElement('p')
+          zeroScoreEl.className = 'skill-card__score'
+          zeroScoreEl.textContent = '技能点：' + summary.score + '点'
+          card.appendChild(zeroScoreEl)
+
+          addSkillCardText_(
+            card,
+            'シフト全体の対応余力を確認するための合算用の点数です。個人の評価を示すものではありません。',
+            'skill-card__note'
+          )
+          addSkillCardText_(card, 'マイスター管理から登録・更新できます', 'skill-card__hint')
+          return
+        }
+
+        // 3. 取得済みマイスターが1件以上の場合（従来どおりの表示）
+        var tagsLabel = document.createElement('p')
+        tagsLabel.className = 'skill-card__label'
+        tagsLabel.textContent = '取得マイスター'
+        card.appendChild(tagsLabel)
+
+        var tagList = document.createElement('div')
+        tagList.className = 'skill-tag-list'
+        for (var t = 0; t < summary.acquired_meisters.length; t++) {
+          var tag = document.createElement('span')
+          tag.className = 'skill-tag'
+          tag.textContent = summary.acquired_meisters[t]
+          tagList.appendChild(tag)
+        }
+        card.appendChild(tagList)
+
+        var scoreEl = document.createElement('p')
+        scoreEl.className = 'skill-card__score'
+        scoreEl.textContent = '技能点：' + summary.score + '点'
+        card.appendChild(scoreEl)
+
+        addSkillCardText_(
+          card,
+          'シフト全体の対応余力を確認するための合算用の点数です。個人の評価を示すものではありません。',
+          'skill-card__note'
+        )
+      }
+
+      /**
+       *  時間軸の時刻ラベル行を描画する（11〜23、翌0〜翌2の16列）
+       */
+      function renderTimelineHeader() {
+        var track = document.getElementById('timeline_header_track')
+        track.innerHTML = ''
+        var labels = ['11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '翌0', '翌1', '翌2']
+        for (var i = 0; i < labels.length; i++) {
+          var div = document.createElement('div')
+          div.className = 'timeline-hour-label'
+          div.textContent = labels[i]
+          track.appendChild(div)
+        }
+      }
+
+      /**
+       *  選択中の営業日のシフトを取得して時間軸を再描画する
+       *  日付切替の連打・通信失敗時に古い日付の表示が残らないよう、通信開始時点で連番と対象日を保存し、
+       *  結果が返った時点で「最新の通信か」「現在選択中の日付と一致するか」の両方を満たす場合だけ描画する
+       */
+      function refreshTimeline() {
+        timelineRequestSequence++
+        var requestId = timelineRequestSequence
+        var requestedBusinessDate = formatDateInputValue_(currentBusinessDate)
+
+        document.getElementById('timeline_body').innerHTML = ''
+        updateTimelineMessage('読み込み中...')
+
+        google.script.run
+          .withSuccessHandler(function (entries) {
+            if (requestId !== timelineRequestSequence) return // 古い通信結果は破棄
+            if (requestedBusinessDate !== formatDateInputValue_(currentBusinessDate)) return
+            updateTimelineMessage('')
+            renderEmployeeRows(entries)
+          })
+          .withFailureHandler(function (error) {
+            if (requestId !== timelineRequestSequence) return // 古い通信のエラーでは現在の画面を上書きしない
+            if (requestedBusinessDate !== formatDateInputValue_(currentBusinessDate)) return
+            updateTimelineMessage('時間軸の取得に失敗しました: ' + error.message)
+          })
+          .getShiftEntriesForBusinessDate(requestedBusinessDate)
+      }
+
+      /**
+       *  従業員別の行（名前＋シフトバー）を描画する。employeesはfreeeの並び順をそのまま使う
+       */
+      function renderEmployeeRows(shiftEntries) {
+        var body = document.getElementById('timeline_body')
+        body.innerHTML = ''
+        var entriesByEmployee = {}
+        for (var i = 0; i < shiftEntries.length; i++) {
+          var e = shiftEntries[i]
+          if (!entriesByEmployee[e.employee_id]) entriesByEmployee[e.employee_id] = []
+          entriesByEmployee[e.employee_id].push(e)
+        }
+        for (var j = 0; j < employees.length; j++) {
+          var emp = employees[j]
+          var row = document.createElement('div')
+          row.className = 'timeline-row timeline-employee-row'
+
+          var nameCell = document.createElement('div')
+          nameCell.className = 'timeline-name'
+          nameCell.textContent = emp.display_name
+          row.appendChild(nameCell)
+
+          var track = document.createElement('div')
+          track.className = 'timeline-track'
+          var entries = entriesByEmployee[String(emp.id)] || []
+          for (var k = 0; k < entries.length; k++) {
+            var entry = entries[k]
+            var bar = document.createElement('button')
+            bar.type = 'button'
+            bar.className = 'timeline-bar'
+            bar.style.left = (entry.offset_minutes / 960 * 100) + '%'
+            bar.style.width = (entry.display_minutes / 960 * 100) + '%'
+            var label = entry.start_label + '〜' + entry.end_label
+            bar.textContent = label
+            bar.title = label
+            bar.setAttribute('aria-label', emp.display_name + ' ' + label + 'の変更または削除')
+            // ループ変数をクロージャで直接参照すると最後の要素の値になってしまうため、
+            // クリック時に必要な情報はdata属性としてボタン自身に持たせ、クリック時にevent.currentTargetから読む
+            bar.dataset.sourceRow = entry.source_row
+            bar.dataset.employeeId = entry.employee_id
+            bar.dataset.startMs = entry.start_ms
+            bar.dataset.endMs = entry.end_ms
+            bar.dataset.employeeName = emp.display_name
+            bar.dataset.shiftLabel = label
+            bar.addEventListener('click', handleShiftBarClick_)
+            track.appendChild(bar)
+          }
+          row.appendChild(track)
+          body.appendChild(row)
+        }
+      }
+
+      var shiftEditContext = null // 変更・削除モーダルで編集中のシフト情報 { source_row, employee_id, start_ms, end_ms }
+      var shiftEditTriggerEl = null // モーダルを開いたシフトバー（button）要素。閉じる際にここへフォーカスを戻す
+      var shiftEditRequestInProgress = false // 更新・削除通信中の連打・多重操作を防ぐ
+
+      /**
+       *  ミリ秒時刻をtime input用の"HH:MM"にする（日付部分は無視し、時刻だけを表示する）
+       */
+      function msToTimeInputValue_(ms) {
+        var d = new Date(Number(ms))
+        return pad2_(d.getHours()) + ':' + pad2_(d.getMinutes())
+      }
+
+      function setShiftEditButtonsDisabled_(disabled) {
+        document.getElementById('shift_edit_save_btn').disabled = disabled
+        document.getElementById('shift_edit_delete_btn').disabled = disabled
+        document.getElementById('shift_edit_cancel_btn').disabled = disabled
+      }
+
+      function updateShiftEditModalMessage_(message) {
+        document.getElementById('shift_edit_modal_message').textContent = message
+      }
+
+      /**
+       *  モーダル内の一時表示（従業員名・対象日・時刻・メッセージ）を空にする
+       *  閉じたあとに前回の対象者・時刻が残ったまま次に開かれることがないようにする
+       */
+      function clearShiftEditModalFields_() {
+        document.getElementById('shift_edit_modal_employee').textContent = ''
+        document.getElementById('shift_edit_modal_date').textContent = ''
+        document.getElementById('shift_edit_start_time').value = ''
+        document.getElementById('shift_edit_end_time').value = ''
+        updateShiftEditModalMessage_('')
+      }
+
+      /**
+       *  「シフトの変更・削除」モーダルを開く。開始・終了時刻は現在値をtime inputへ初期表示し、
+       *  開始時刻へフォーカスする。triggerElは呼び出し元のシフトバー（閉じる際にフォーカスを戻す先）
+       */
+      function openShiftEditModal_(entry, employeeName, triggerEl) {
+        shiftEditContext = entry
+        shiftEditTriggerEl = triggerEl
+        document.getElementById('shift_edit_modal_employee').textContent = employeeName
+        document.getElementById('shift_edit_modal_date').textContent = formatBusinessDateHeaderLabel_(currentBusinessDate)
+        var startInput = document.getElementById('shift_edit_start_time')
+        startInput.value = msToTimeInputValue_(entry.start_ms)
+        document.getElementById('shift_edit_end_time').value = msToTimeInputValue_(entry.end_ms)
+        updateShiftEditModalMessage_('')
+        setShiftEditButtonsDisabled_(false)
+        document.getElementById('shift_edit_modal').hidden = false
+        startInput.focus()
+      }
+
+      /**
+       *  モーダルを閉じる。通信中は閉じない（多重更新・多重削除防止と同じ理由で、通信結果を待つ）
+       *  一時表示をクリアし、モーダルを開いた元のシフトバーへフォーカスを戻す
+       *  （保存・削除成功時は直後にrefreshTimeline()で時間軸が再描画されるため、
+       *  元のバー要素自体が入れ替わりフォーカスが失われる場合がある。キャンセル・Esc・
+       *  外側クリックのように画面を変更せず閉じる場合は、常に元のバーへ戻る）
+       */
+      function closeShiftEditModal_() {
+        if (shiftEditRequestInProgress) return
+        document.getElementById('shift_edit_modal').hidden = true
+        clearShiftEditModalFields_()
+        shiftEditContext = null
+        if (shiftEditTriggerEl) {
+          shiftEditTriggerEl.focus()
+          shiftEditTriggerEl = null
+        }
+      }
+
+      /**
+       *  モーダルのオーバーレイ自身をクリックした場合だけ閉じる（モーダル本体のクリックでは閉じない）
+       */
+      function handleShiftEditOverlayClick_(event) {
+        if (event.target.id === 'shift_edit_modal') closeShiftEditModal_()
+      }
+
+      /**
+       *  シフトバー（button）のクリックから、変更・削除モーダルを開く
+       *  data属性から対象シフトの情報を取り出す（renderEmployeeRows側の説明を参照）
+       */
+      function handleShiftBarClick_(event) {
+        var bar = event.currentTarget
+        openShiftEditModal_({
+          source_row: bar.dataset.sourceRow,
+          employee_id: bar.dataset.employeeId,
+          start_ms: bar.dataset.startMs,
+          end_ms: bar.dataset.endMs
+        }, bar.dataset.employeeName, bar)
+      }
+
+      /**
+       *  モーダルの「変更を保存」。updateShiftEntryへ通信し、成功時だけモーダルを閉じて
+       *  時間軸を再取得・判定結果をクリアする。失敗時はモーダルを開いたまま入力値とエラーを残す
+       */
+      function handleShiftEditSave_() {
+        if (!shiftEditContext || shiftEditRequestInProgress) return
+        var startTime = document.getElementById('shift_edit_start_time').value
+        var endTime = document.getElementById('shift_edit_end_time').value
+        if (!startTime || !endTime) {
+          updateShiftEditModalMessage_('開始・終了時刻を入力してください')
+          return
+        }
+
+        shiftEditRequestInProgress = true
+        setShiftEditButtonsDisabled_(true)
+        updateShiftEditModalMessage_('保存中...')
+
+        google.script.run
+          .withSuccessHandler(function (result) {
+            shiftEditRequestInProgress = false
+            setShiftEditButtonsDisabled_(false)
+            if (result.success) {
+              closeShiftEditModal_()
+              updateShiftMessage(result.message)
+              refreshTimeline()
+              clearJudgeResults()
+            } else {
+              updateShiftEditModalMessage_(result.message)
+            }
+          })
+          .withFailureHandler(function (error) {
+            shiftEditRequestInProgress = false
+            setShiftEditButtonsDisabled_(false)
+            updateShiftEditModalMessage_('変更に失敗しました: ' + error.message)
+          })
+          .updateShiftEntry({
+            source_row: shiftEditContext.source_row,
+            employee_id: shiftEditContext.employee_id,
+            start_ms: shiftEditContext.start_ms,
+            end_ms: shiftEditContext.end_ms,
+            business_date: formatDateInputValue_(currentBusinessDate),
+            start_time: startTime,
+            end_time: endTime
+          })
+      }
+
+      /**
+       *  モーダルの「削除」。危険操作のため実行前にwindow.confirmで最終確認する
+       *  削除は既存のdeleteShiftEntry（source_row・employee_id・start_ms・end_msの一致確認）をそのまま呼ぶ
+       */
+      function handleShiftEditDelete_() {
+        if (!shiftEditContext || shiftEditRequestInProgress) return
+        var confirmed = window.confirm('このシフトを削除します。よろしいですか？')
+        if (!confirmed) return
+
+        shiftEditRequestInProgress = true
+        setShiftEditButtonsDisabled_(true)
+        updateShiftEditModalMessage_('削除中...')
+
+        google.script.run
+          .withSuccessHandler(function (result) {
+            shiftEditRequestInProgress = false
+            setShiftEditButtonsDisabled_(false)
+            if (result.success) {
+              closeShiftEditModal_()
+              updateShiftMessage(result.message)
+              refreshTimeline()
+              clearJudgeResults()
+            } else {
+              updateShiftEditModalMessage_(result.message)
+            }
+          })
+          .withFailureHandler(function (error) {
+            shiftEditRequestInProgress = false
+            setShiftEditButtonsDisabled_(false)
+            updateShiftEditModalMessage_('削除に失敗しました: ' + error.message)
+          })
+          .deleteShiftEntry({
+            source_row: shiftEditContext.source_row,
+            employee_id: shiftEditContext.employee_id,
+            start_ms: shiftEditContext.start_ms,
+            end_ms: shiftEditContext.end_ms
+          })
+      }
+</script>

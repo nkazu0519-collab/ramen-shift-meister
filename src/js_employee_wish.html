@@ -1,0 +1,468 @@
+<script>
+
+      /**
+       *  従業員希望シフト一括提出（view_employee_wish.htmlのクライアント側）。
+       *  07_ブラッシュアップ/02_企画・設計/従業員希望シフト一括提出_最小仕様.md を参照。
+       *
+       *  状態設計:
+       *    wishServerDays_    : 直近にサーバーから取得した対象期間の日付別状態（確定済み扱い）
+       *    wishPendingByDate_ : 画面上で「選択日へ適用」した、まだ「まとめて提出」していない
+       *                         変更内容（{ date: { answer_type, start_time, end_time } }）。
+       *                         これがある日は、カレンダー上で「未提出の変更あり」を示す。
+       *    wishSelectedDates_ : カレンダー上で選択中（次の一括設定の対象）の日付集合。
+       *  「設定しただけでは保存しない」という要件を、wishPendingByDate_をクライアント側だけの
+       *  一時状態にすることで満たす。「まとめて提出」を押した時点で初めてサーバーへ送る。
+       *  別の従業員・別の期間へ切り替えたら、表示内容・選択状態・未提出の変更をすべてリセットする
+       *  （両モーダルの状態混線を避けるshift_edit_modal等と同じ考え方を、この画面の状態にも適用する）
+       *
+       *  2026-09-25、人事担当者との最終確認面談後、日付選択・内容確認・まとめて提出を
+       *  「選択日への一括設定」カード（wish_editor_card）内へ統一した。カレンダーが確認表示を
+       *  兼ねるため、従来あった独立の「提出内容の確認」カード（wish_summary_card）・
+       *  一覧（wish_summary_list）は廃止した。提出ボタン・メッセージ（wish_submit_btn・
+       *  wish_submit_message）はwish_editor_card内へ移動し、提出可否の判定だけを担う
+       *  updateWishSubmitState_（旧renderWishSummaryList_）が引き続き管理する。
+       */
+
+      var wishScreenEmployees_ = []
+      var wishSelectedEmpId_ = ''
+      var wishSelectedYear_ = 0
+      var wishSelectedMonth_ = 0
+      var wishSelectedPeriod_ = 'first_half'
+      var wishDeadlineMs_ = null
+      var wishServerDays_ = [] // [{ date, work_registered, answer_type, start_time, end_time, wish_id, after_deadline, conflict }]
+      var wishPendingByDate_ = {} // { 'YYYY-MM-DD': { answer_type, start_time, end_time } }
+      var wishSelectedDates_ = {} // { 'YYYY-MM-DD': true }
+      var wishApplyAnswerType_ = '時間希望'
+      var wishPeriodRequestSequence_ = 0 // 期間・従業員切替の連番。古い通信結果の描画を防ぐ
+      var wishSubmitInProgress_ = false // 「まとめて提出」の連打防止
+
+      /**
+       *  画面初期化。従業員一覧・年月セレクトの選択肢を組み立て、初期状態（今日を含む月・前半）を選ぶ
+       */
+      function initEmployeeWishScreen_() {
+        var today = new Date()
+        wishSelectedYear_ = today.getFullYear()
+        wishSelectedMonth_ = today.getMonth() + 1
+        wishSelectedPeriod_ = today.getDate() <= 15 ? 'first_half' : 'second_half'
+
+        setupWishYearMonthSelects_()
+        updateWishPeriodToggleUi_()
+
+        google.script.run
+          .withSuccessHandler(function (data) {
+            wishScreenEmployees_ = data.employees || []
+            renderWishEmployeeOptions_()
+          })
+          .withFailureHandler(function (error) {
+            updateWishPeriodMessage_('従業員一覧の取得に失敗しました: ' + error.message)
+          })
+          .getEmployeeWishScreenInitData()
+      }
+
+      /**
+       *  年セレクト（前後1年程度の幅）・月セレクトの選択肢を組み立て、現在の選択値を反映する
+       */
+      function setupWishYearMonthSelects_() {
+        var yearSelect = document.getElementById('wish_year_select')
+        yearSelect.innerHTML = ''
+        for (var y = wishSelectedYear_ - 1; y <= wishSelectedYear_ + 1; y++) {
+          var yOpt = document.createElement('option')
+          yOpt.value = String(y)
+          yOpt.textContent = y + '年'
+          yearSelect.appendChild(yOpt)
+        }
+        yearSelect.value = String(wishSelectedYear_)
+
+        var monthSelect = document.getElementById('wish_month_select')
+        monthSelect.innerHTML = ''
+        for (var m = 1; m <= 12; m++) {
+          var mOpt = document.createElement('option')
+          mOpt.value = String(m)
+          mOpt.textContent = m + '月'
+          monthSelect.appendChild(mOpt)
+        }
+        monthSelect.value = String(wishSelectedMonth_)
+      }
+
+      function renderWishEmployeeOptions_() {
+        var select = document.getElementById('wish_employee_select')
+        while (select.options.length > 1) select.remove(1)
+        for (var i = 0; i < wishScreenEmployees_.length; i++) {
+          var opt = document.createElement('option')
+          opt.value = wishScreenEmployees_[i].id
+          opt.textContent = wishScreenEmployees_[i].display_name
+          select.appendChild(opt)
+        }
+      }
+
+      function updateWishPeriodMessage_(message) {
+        document.getElementById('wish_period_message').textContent = message
+      }
+
+      function updateWishApplyMessage_(message) {
+        document.getElementById('wish_apply_message').textContent = message
+      }
+
+      function updateWishSubmitMessage_(message) {
+        document.getElementById('wish_submit_message').textContent = message
+      }
+
+      /**
+       *  前半／後半トグルボタンの見た目（is-selected）を現在の選択値に合わせる
+       */
+      function updateWishPeriodToggleUi_() {
+        var firstBtn = document.getElementById('wish_period_first_btn')
+        var secondBtn = document.getElementById('wish_period_second_btn')
+        firstBtn.classList.toggle('is-selected', wishSelectedPeriod_ === 'first_half')
+        secondBtn.classList.toggle('is-selected', wishSelectedPeriod_ === 'second_half')
+        firstBtn.setAttribute('aria-pressed', wishSelectedPeriod_ === 'first_half' ? 'true' : 'false')
+        secondBtn.setAttribute('aria-pressed', wishSelectedPeriod_ === 'second_half' ? 'true' : 'false')
+      }
+
+      /**
+       *  従業員切替。表示内容・選択状態・未提出の変更をすべてリセットしてから、新しい従業員の
+       *  期間データを読み込み直す（「別の従業員を開いたときは表示内容と展開状態をリセットする」の従業員版）
+       */
+      function handleWishEmployeeChange_() {
+        wishSelectedEmpId_ = document.getElementById('wish_employee_select').value
+        resetWishPendingAndSelection_()
+        loadWishPeriodData_()
+      }
+
+      function handleWishPeriodInputChange_() {
+        wishSelectedYear_ = Number(document.getElementById('wish_year_select').value)
+        wishSelectedMonth_ = Number(document.getElementById('wish_month_select').value)
+        resetWishPendingAndSelection_()
+        loadWishPeriodData_()
+      }
+
+      function handleWishPeriodChange_(period) {
+        wishSelectedPeriod_ = period
+        updateWishPeriodToggleUi_()
+        resetWishPendingAndSelection_()
+        loadWishPeriodData_()
+      }
+
+      /**
+       *  未提出の変更・カレンダー選択状態をクリアする（保存済みの内容自体は消さない。
+       *  期間・従業員を切り替えるたびに呼ぶ）。
+       *  2026-09-25、レビュー対応（指摘2）：wish_submit_message（提出成功・失敗・要店主確認・
+       *  提出中の各メッセージ）も合わせてクリアする。対象切替後に前の対象向けメッセージが
+       *  残ることを防ぐ。提出成功直後にloadWishPeriodData_経由で表示される成功メッセージは、
+       *  この関数を経由しない別経路（handleWishSubmitBulk_が直接呼ぶ）のため影響を受けない
+       */
+      function resetWishPendingAndSelection_() {
+        wishPendingByDate_ = {}
+        wishSelectedDates_ = {}
+        updateWishApplyMessage_('')
+        updateWishSubmitMessage_('')
+      }
+
+      /**
+       *  対象従業員・対象期間の日付別状態をサーバーから取得し直す。取得後はwishServerDays_を
+       *  更新し、カレンダー（確認表示を兼ねる）を再描画する。従業員未選択の場合は編集カード自体を隠す
+       */
+      function loadWishPeriodData_() {
+        var editorCard = document.getElementById('wish_editor_card')
+        document.getElementById('wish_submit_btn').disabled = true
+
+        if (!wishSelectedEmpId_) {
+          editorCard.hidden = true
+          document.getElementById('wish_deadline_note').textContent = ''
+          updateWishPeriodMessage_('')
+          return
+        }
+
+        wishPeriodRequestSequence_++
+        var requestId = wishPeriodRequestSequence_
+        updateWishPeriodMessage_('読み込み中...')
+
+        google.script.run
+          .withSuccessHandler(function (result) {
+            if (requestId !== wishPeriodRequestSequence_) return
+            if (!result.success) {
+              updateWishPeriodMessage_(result.message)
+              editorCard.hidden = true
+              return
+            }
+            wishServerDays_ = result.days
+            wishDeadlineMs_ = result.deadline_ms
+            updateWishPeriodMessage_('')
+            updateWishDeadlineNote_()
+            editorCard.hidden = false
+            renderWishCalendar_()
+            updateWishSubmitState_()
+          })
+          .withFailureHandler(function (error) {
+            if (requestId !== wishPeriodRequestSequence_) return
+            updateWishPeriodMessage_('対象期間の取得に失敗しました: ' + error.message)
+            editorCard.hidden = true
+          })
+          .getEmployeeWishPeriodData(wishSelectedEmpId_, wishSelectedYear_, wishSelectedMonth_, wishSelectedPeriod_)
+      }
+
+      function updateWishDeadlineNote_() {
+        var note = document.getElementById('wish_deadline_note')
+        if (!wishDeadlineMs_) {
+          note.textContent = ''
+          return
+        }
+        var d = new Date(wishDeadlineMs_)
+        var label = d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日 23:59'
+        note.textContent = '締切: ' + label + '（締切後も新規提出・変更はできますが、期限後の提出として記録されます）'
+      }
+
+      /**
+       *  "YYYY-MM-DD"の日付文字列から「○月○日（○）」の短い表示ラベルを作る
+       */
+      function formatWishDateLabel_(dateStr) {
+        var d = parseLocalDateStr_(dateStr)
+        return (d.getMonth() + 1) + '/' + d.getDate() + '（' + WEEKDAY_LABELS_[d.getDay()] + '）'
+      }
+
+      /**
+       *  ある日付の「表示すべき内容」を返す。未提出の変更（wishPendingByDate_）があればそれを優先し、
+       *  なければサーバーから取得した確定済みの内容（wishServerDays_）を使う。
+       *  勤務登録済みの日は、pendingの有無に関わらず常にサーバー側の確定内容を優先する
+       *  （勤務登録済みの日はそもそも編集操作自体を受け付けないため、pendingが乗ることはない想定だが、
+       *  防御的にもこの優先順位にしておく）
+       */
+      function resolveWishDayDisplay_(serverDay) {
+        if (serverDay.work_registered) return serverDay
+        var pending = wishPendingByDate_[serverDay.date]
+        if (!pending) return serverDay
+        return {
+          date: serverDay.date,
+          work_registered: false,
+          answer_type: pending.answer_type,
+          start_time: pending.start_time || '',
+          end_time: pending.end_time || '',
+          wish_id: serverDay.wish_id,
+          after_deadline: serverDay.after_deadline,
+          conflict: serverDay.conflict,
+          is_pending: true
+        }
+      }
+
+      /**
+       *  カレンダー（対象期間の日付グリッド）を描画する。各日付はボタンで、クリックすると
+       *  選択（次の一括設定の対象）を切り替える。勤務登録済み・競合の日は選択できない
+       *  （入力部品を無効化する要件を、選択自体をできなくすることで満たす）。
+       *  色だけを唯一の手掛かりにしないよう、状態を短い文言でも示す（未設定／時間表記／出勤不可／
+       *  勤務登録済み／要確認）
+       */
+      function renderWishCalendar_() {
+        var calendar = document.getElementById('wish_calendar')
+        while (calendar.firstChild) calendar.removeChild(calendar.firstChild)
+
+        for (var i = 0; i < wishServerDays_.length; i++) {
+          var serverDay = wishServerDays_[i]
+          var display = resolveWishDayDisplay_(serverDay)
+
+          var cell = document.createElement('button')
+          cell.type = 'button'
+          cell.className = 'wish-day-cell'
+          cell.dataset.date = serverDay.date
+
+          var disabled = serverDay.work_registered || serverDay.conflict
+          if (disabled) {
+            cell.disabled = true
+            cell.className += ' wish-day-cell--disabled'
+          }
+          var isSelected = !!wishSelectedDates_[serverDay.date]
+          if (isSelected) {
+            cell.className += ' wish-day-cell--selected'
+            cell.setAttribute('aria-pressed', 'true')
+          } else {
+            cell.setAttribute('aria-pressed', 'false')
+          }
+          if (display.is_pending) cell.className += ' wish-day-cell--pending'
+
+          // 2026-09-25、レビュー対応（指摘1）：確認一覧の廃止で失われた「期限後に提出済み」の
+          // 識別をカレンダーへ引き継ぐ。保存済み（is_pendingでない）・時間希望または出勤不可が
+          // 確定している・勤務登録済みや競合でない、という条件をすべて満たす日だけに付ける。
+          // 選択中の青い表示を妨げないよう、選択中でない場合だけ適用する
+          var isAfterDeadline = serverDay.after_deadline && !!display.answer_type &&
+            !display.is_pending && !serverDay.work_registered && !serverDay.conflict
+          if (isAfterDeadline && !isSelected) cell.className += ' wish-day-cell--after-deadline'
+
+          var dateEl = document.createElement('span')
+          dateEl.className = 'wish-day-cell__date'
+          dateEl.textContent = formatWishDateLabel_(serverDay.date)
+          cell.appendChild(dateEl)
+
+          var statusEl = document.createElement('span')
+          statusEl.className = 'wish-day-cell__status'
+          statusEl.textContent = buildWishDayStatusText_(serverDay, display)
+          cell.appendChild(statusEl)
+
+          // 色だけに依存しないよう、期限後に提出済みの日はaria-labelへ明示する
+          // （画面上への「期限後」という追加文言は表示しない）
+          if (isAfterDeadline) {
+            cell.setAttribute('aria-label', formatWishDateLabel_(serverDay.date) + ' ' + buildWishDayStatusText_(serverDay, display) + '（期限後に提出済み）')
+          }
+
+          if (!disabled) {
+            cell.addEventListener('click', handleWishCalendarCellClick_)
+          }
+          calendar.appendChild(cell)
+        }
+      }
+
+      /**
+       *  カレンダーセルで使う「状態を示す短い文言」を組み立てる
+       *  （色だけに依存しないための文言。勤務登録済み・競合・出勤不可・時間希望・未設定を区別する）
+       *  勤務登録済みの日は、サーバーから届いたwork_time_labels（例:["12:00〜20:00"]）を
+       *  そのまま並べて表示する（レビュー対応 2026-09-22、指摘3。複数勤務があれば読点区切りで
+       *  すべて表示し、どちらか一方だけを隠さない）
+       */
+      function buildWishDayStatusText_(serverDay, display) {
+        if (serverDay.work_registered) {
+          var labels = serverDay.work_time_labels || []
+          return labels.length > 0 ? '勤務登録済み ' + labels.join('、') : '勤務登録済み'
+        }
+        if (serverDay.conflict) return '要店主確認'
+        if (!display.answer_type) return '未設定'
+        if (display.answer_type === '出勤不可') return '出勤不可' + (display.is_pending ? '（未提出）' : '')
+        var timeLabel = (display.start_time || '') + '〜' + (display.end_time || '')
+        return timeLabel + (display.is_pending ? '（未提出）' : '')
+      }
+
+      function handleWishCalendarCellClick_(event) {
+        var date = event.currentTarget.dataset.date
+        if (wishSelectedDates_[date]) {
+          delete wishSelectedDates_[date]
+        } else {
+          wishSelectedDates_[date] = true
+        }
+        renderWishCalendar_()
+      }
+
+      /**
+       *  「時間を指定」「出勤不可」の切り替え。出勤不可を選んだ場合は時刻入力を隠す
+       *  （見た目上も操作対象でないことを示す。値のクリアは行わない＝切り替え直しで前回入力を復元できる）
+       */
+      function handleWishAnswerTypeChange_(answerType) {
+        wishApplyAnswerType_ = answerType
+        document.getElementById('wish_answer_time_btn').classList.toggle('is-selected', answerType === '時間希望')
+        document.getElementById('wish_answer_unavailable_btn').classList.toggle('is-selected', answerType === '出勤不可')
+        var isTime = answerType === '時間希望'
+        document.getElementById('wish_apply_start_field').hidden = !isTime
+        document.getElementById('wish_apply_end_field').hidden = !isTime
+      }
+
+      /**
+       *  「選択日へ適用」。選択中の日付群すべてへ、今設定中の内容（時間希望または出勤不可）を
+       *  wishPendingByDate_へ反映する（サーバーへはまだ送らない）。適用後も画面は閉じず、
+       *  選択状態だけをクリアして続けて別の日付群を選べるようにする（要件どおり）。
+       *  時間希望の入力チェックはクライアント側の一次防御に留め、実際の妥当性確認（毎時0分・
+       *  3時間以上・営業時間重なり）は「まとめて提出」時にサーバー側で必ず再検証する
+       */
+      function handleWishApplyToSelectedDates_() {
+        var selectedDates = Object.keys(wishSelectedDates_)
+        if (selectedDates.length === 0) {
+          updateWishApplyMessage_('日付をカレンダーから選択してください')
+          return
+        }
+
+        var startTime = ''
+        var endTime = ''
+        if (wishApplyAnswerType_ === '時間希望') {
+          startTime = document.getElementById('wish_apply_start_time').value
+          endTime = document.getElementById('wish_apply_end_time').value
+          if (!startTime || !endTime) {
+            updateWishApplyMessage_('開始・終了時刻を入力してください')
+            return
+          }
+        }
+
+        for (var i = 0; i < selectedDates.length; i++) {
+          wishPendingByDate_[selectedDates[i]] = {
+            answer_type: wishApplyAnswerType_,
+            start_time: startTime,
+            end_time: endTime
+          }
+        }
+        wishSelectedDates_ = {}
+        updateWishApplyMessage_('選択した' + selectedDates.length + '日へ設定しました。カレンダーの「未提出」内容を確認し、「まとめて提出」を押してください。')
+        renderWishCalendar_()
+        updateWishSubmitState_()
+      }
+
+      /**
+       *  提出ボタンの有効・無効と、競合日がある場合の案内メッセージを更新する。
+       *  2026-09-25、下部の確認一覧を廃止しカレンダーを確認表示として使う構成へ変更したため、
+       *  一覧のDOM描画（旧renderWishSummaryList_）は行わず、提出可否の判定だけを担う
+       */
+      function updateWishSubmitState_() {
+        var hasPending = Object.keys(wishPendingByDate_).length > 0
+        var hasConflict = false
+        for (var i = 0; i < wishServerDays_.length; i++) {
+          if (wishServerDays_[i].conflict) {
+            hasConflict = true
+            break
+          }
+        }
+
+        var submitBtn = document.getElementById('wish_submit_btn')
+        submitBtn.disabled = !hasPending || wishSubmitInProgress_
+        if (hasConflict) {
+          updateWishSubmitMessage_('要店主確認の日があります。まとめて提出は可能ですが、その日は含まれません（対象日を選び直してください）')
+        }
+      }
+
+      /**
+       *  「まとめて提出」。wishPendingByDate_の内容を、対象期間全体の日付リストへ変換して
+       *  一括保存サーバー関数へ送る。サーバー側で全件再検証されるため、ここでの事前チェックは
+       *  空送信の防止程度に留める。通信失敗・検証失敗時はwishPendingByDate_を消さず、
+       *  入力中の内容を画面に残す。成功時だけ保存済み表示へ更新する（サーバーの最新状態を
+       *  再取得し、wishPendingByDate_をクリアする）
+       */
+      function handleWishSubmitBulk_() {
+        if (wishSubmitInProgress_) return
+        var items = []
+        for (var date in wishPendingByDate_) {
+          if (!Object.prototype.hasOwnProperty.call(wishPendingByDate_, date)) continue
+          var p = wishPendingByDate_[date]
+          items.push({
+            date: date,
+            answer_type: p.answer_type,
+            start_time: p.start_time,
+            end_time: p.end_time
+          })
+        }
+        if (items.length === 0) {
+          updateWishSubmitMessage_('提出する変更がありません')
+          return
+        }
+
+        wishSubmitInProgress_ = true
+        document.getElementById('wish_submit_btn').disabled = true
+        updateWishSubmitMessage_('提出中...')
+
+        google.script.run
+          .withSuccessHandler(function (result) {
+            wishSubmitInProgress_ = false
+            if (result.success) {
+              wishPendingByDate_ = {}
+              updateWishSubmitMessage_(result.message)
+              loadWishPeriodData_()
+            } else {
+              updateWishSubmitMessage_(result.message)
+              document.getElementById('wish_submit_btn').disabled = false
+            }
+          })
+          .withFailureHandler(function (error) {
+            wishSubmitInProgress_ = false
+            document.getElementById('wish_submit_btn').disabled = false
+            updateWishSubmitMessage_('提出に失敗しました: ' + error.message + '（入力内容は画面に残っています）')
+          })
+          .submitEmployeeShiftWishesBulk({
+            employee_id: wishSelectedEmpId_,
+            year: wishSelectedYear_,
+            month: wishSelectedMonth_,
+            period: wishSelectedPeriod_,
+            items: items
+          })
+      }
+</script>

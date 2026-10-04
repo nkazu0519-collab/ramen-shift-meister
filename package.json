@@ -1,0 +1,12 @@
+{
+  "name": "ramen-shift-meister",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ラーメン店の持ち場別技能を踏まえたシフト管理の個人制作アプリ",
+  "scripts": {
+    "test": "node scripts/run-tests.cjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

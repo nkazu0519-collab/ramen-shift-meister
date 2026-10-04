@@ -1,0 +1,25 @@
+# 個別のGoogle/GAS接続情報
+.clasp.json
+.clasprc.json
+.clasprc*.json
+.env
+.env.*
+!.env.example
+*credentials*.json
+*secret*.json
+*.pem
+*.key
+
+# ローカル生成物
+node_modules/
+coverage/
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 実データのエクスポート
+*.csv
+*.xlsx
+*.xls

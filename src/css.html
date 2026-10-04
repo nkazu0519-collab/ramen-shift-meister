@@ -1,0 +1,1925 @@
+<style>
+  /*
+   * カラー・余白・フォント等のトークンは、freeeのデザインシステム「vibes」公式リポジトリ
+   * (https://github.com/freee/vibes) の stylesheets/lv0/_colors.scss, _size.scss, _focus.scss を
+   * 直接参照し、近い用途のトークンをCSS変数として移植したもの（vibesのReactコンポーネントやnpmパッケージは導入していない）。
+   * 成立/注意/不成立の意味色（緑/黄/赤）はこのアプリ独自の判定表示のためのマッピングで、
+   * vibesの色相スケール（GR/YE/RE）から近い階調を選んでいる。
+   */
+  :root {
+    --color-primary: #285ac8;
+    --color-primary-hover: #23418c;
+    --color-primary-pressed: #143278;
+    --color-primary-soft: #ebf3ff;
+    --color-background: #f7f5f5;
+    --color-surface: #ffffff;
+    --color-surface-subtle: #f0eded;
+    --color-border: #dcdcdc;
+    --color-border-strong: #a0a0a0;
+    --color-text: #323232;
+    --color-text-muted: #6e6b6b;
+    --color-focus: #2864f0;
+    --color-success: #006e2d;
+    --color-success-bg: #cdebd7;
+    --color-warning: #855900;
+    --color-warning-bg: #fff0d2;
+    --color-danger: #a51428;
+    --color-danger-bg: #fad2d7;
+
+    --font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'ヒラギノ角ゴ ProN',
+      'Hiragino Kaku Gothic ProN', Arial, 'メイリオ', Meiryo, sans-serif;
+
+    --space-xs: 0.25rem;
+    --space-sm: 0.5rem;
+    --space-md: 1rem;
+    --space-lg: 1.5rem;
+    --space-xl: 2rem;
+
+    --radius-control: 0.5rem;
+    --radius-card: 0.75rem;
+
+    --control-height: 2.25rem;
+
+    /* vibesの $vbFocusHighlightShadow と同じ構造（内側白1px＋フォーカス色の輪＋外側白1px）のフォーカスリング */
+    --focus-ring: 0 0 0 1px #fff, 0 0 0 3px var(--color-focus), 0 0 0 4px #fff;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background: var(--color-background);
+    color: var(--color-text);
+    font-family: var(--font-family);
+    font-size: 0.875rem;
+    line-height: 1.6;
+  }
+
+  /* 判定詳細モーダル表示中だけ、背景ページのスクロールを止める（openJudgeDetailModal_・
+     closeJudgeDetailModal_がbodyへこのクラスを付け外しする）。position:fixed等でbody自体を
+     ずらす方式は使わず、overflow:hiddenだけを当てるため、クラスを外せば元のスクロール位置に
+     そのまま戻る。シフト変更・削除モーダル（shift_edit_modal）はこのクラスを使わないため影響しない */
+  body.judge-detail-modal-open {
+    overflow: hidden;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--font-family);
+    font-weight: bold;
+    color: var(--color-text);
+    margin: 0 0 var(--space-xs);
+  }
+  h1 { font-size: 1.375rem; }
+  h2 { font-size: 1.125rem; }
+  h3 {
+    font-size: 1rem;
+    margin-bottom: var(--space-sm);
+  }
+  p { margin: 0 0 var(--space-sm); }
+
+  a { color: var(--color-primary); }
+
+  /* キーボードフォーカスは常に見えるようにする（マウス操作時も含めて一貫させる） */
+  a:focus,
+  button:focus,
+  input:focus,
+  select:focus {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .page-container {
+    width: 100%;
+    max-width: 70rem;
+    margin: 0 auto;
+    padding: var(--space-lg) var(--space-md);
+    min-width: 0;
+  }
+
+  @media (max-width: 48rem) {
+    .page-container {
+      padding: var(--space-md) var(--space-sm);
+    }
+  }
+
+  /* 画面が増えてもapp_sidebar.htmlへ項目を足すだけで拡張できる共通ナビゲーション。 */
+  .app-shell {
+    display: flex;
+    align-items: flex-start;
+    min-height: 100vh;
+  }
+
+  /* サイドバー本体と開閉ボタンをまとめる外枠。position:relativeの基準にするためだけの要素で、
+     本文とは別の横幅を取る独立列にはしない（widthを指定せず、中の.app-sidebarの幅にそのまま従う）。
+     PC幅ではこの外枠自体をstickyにし、本文をスクロールしても外枠（サイドバー本体＋境界の開閉ボタン）が
+     画面内に留まるようにする（レビュー対応：以前は外枠がrelativeで中の.app-sidebarだけがstickyだったため、
+     絶対配置の開閉ボタンは外枠＝ページ全体の高さの中に固定され、スクロールで画面外へ出てしまっていた） */
+  .app-sidebar-wrap {
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    height: 100vh;
+    flex: 0 0 auto;
+  }
+
+  /* PC幅の変数（--app-sidebar-width）。折りたたみ時はこれを細い値へ差し替えるだけで、
+     サイドバー幅・開閉ボタンの位置（右端に追従）の両方が連動する */
+  .app-sidebar-wrap {
+    --app-sidebar-width: 12.5rem;
+    --app-sidebar-collapsed-width: 4rem;
+  }
+
+  .app-sidebar {
+    width: var(--app-sidebar-width);
+    height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+    background: #f2f6fd;
+    border-right: 1px solid var(--color-border);
+    padding: var(--space-md) var(--space-sm);
+    transition: width 0.15s;
+    box-sizing: border-box;
+  }
+  .app-sidebar__brand {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-height: 2.75rem;
+    padding: 0 var(--space-sm);
+    color: var(--color-primary);
+    font-size: 1rem;
+    font-weight: bold;
+    text-decoration: none;
+  }
+  .app-sidebar__brand-mark {
+    font-size: 0.875rem;
+  }
+  .app-sidebar__nav {
+    margin-top: var(--space-lg);
+  }
+  .app-sidebar__group-label {
+    margin: var(--space-lg) var(--space-sm) var(--space-xs);
+    color: var(--color-text-muted);
+    font-size: 0.6875rem;
+    font-weight: bold;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+  }
+  .app-sidebar__item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-height: 2.75rem;
+    margin: 0.125rem 0;
+    padding: var(--space-sm);
+    border-radius: var(--radius-control);
+    color: var(--color-text);
+    font-weight: bold;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .app-sidebar__item:hover {
+    background: var(--color-primary-soft);
+    color: var(--color-primary-hover);
+  }
+  .app-sidebar__item.is-active {
+    background: #dbe8ff;
+    color: var(--color-primary);
+  }
+  .app-sidebar__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    flex: 0 0 auto;
+    color: var(--color-primary);
+    font-size: 1.5rem;
+  }
+
+  /* サイドバー開閉ボタン。参考画像（freee人事労務のサイドバー）と同じく、サイドバーの右上・
+     右端境界から少し外へ張り出す円形ボタンにする（.app-sidebar-wrap基準でposition:absolute配置。
+     wrap自体の幅は.app-sidebarに従うため、折りたたみ時も右端の位置に自動で追従する）。
+     「メニュー」の文字ラベルは持たず、開閉の向きを示すアイコンのみ（テキストはJS側でtextContentを
+     «/»に切り替える。aria-label・aria-expandedも状態に応じて更新する） */
+  .app-sidebar-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: var(--space-md);
+    right: -1rem;
+    z-index: 11;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-family: var(--font-family);
+    font-size: 0.875rem;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 0.0625rem 0.125rem rgba(0, 0, 0, 0.15);
+    box-sizing: border-box;
+  }
+  .app-sidebar-toggle-btn:hover {
+    background: var(--color-primary-soft);
+    border-color: var(--color-primary);
+    color: var(--color-primary-hover);
+  }
+  .app-sidebar-toggle-btn__icon {
+    font-size: 1rem;
+  }
+
+  /* スマホでサイドバーを開いた時だけ使う、背景操作を防ぐための透明な全面要素。
+     display:noneを既定にし、hidden属性が外れた時だけblockにする（他の[hidden]優先パターンと同じ考え方） */
+  .app-sidebar-scrim {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(50, 50, 50, 0.4);
+    z-index: 9;
+  }
+  .app-sidebar-scrim:not([hidden]) {
+    display: block;
+  }
+
+  /* スマホでサイドバーをオーバーレイ表示している間、背景ページのスクロールを止める
+     （判定詳細モーダルのjudge-detail-modal-openと同じ考え方。overflow:hiddenのみでスクロール位置は保持する） */
+  body.app-sidebar-scroll-lock {
+    overflow: hidden;
+  }
+
+  /* PC幅：折りたたんでもサイドバー自体は消さず、幅を細くしてアイコンだけの列にする
+     （参考画像に合わせた変更。以前のdisplay:noneをやめ、アイコンからの遷移・Tab移動を保つ）。
+     項目名・グループ見出し・ブランド名のテキストラベルだけを視覚的に隠す（幅0のoverflow:hiddenで
+     切り取るのではなく、要素自体をdisplay:noneにする。aria-labelをリンク・ボタン自身へ
+     個別に持たせてあるため、スクリーンリーダー上のアクセシブルネームはそのまま残る） */
+  .app-shell.is-sidebar-collapsed .app-sidebar-wrap {
+    --app-sidebar-width: var(--app-sidebar-collapsed-width);
+  }
+  .app-shell.is-sidebar-collapsed .app-sidebar__brand-label,
+  .app-shell.is-sidebar-collapsed .app-sidebar__group-label,
+  .app-shell.is-sidebar-collapsed .app-sidebar__item-label {
+    display: none;
+  }
+  .app-shell.is-sidebar-collapsed .app-sidebar__brand {
+    justify-content: center;
+    padding: 0;
+  }
+  .app-shell.is-sidebar-collapsed .app-sidebar__item {
+    justify-content: center;
+    padding: var(--space-sm) 0;
+    position: relative;
+  }
+
+  /* PC折りたたみ時、hoverまたはキーボードフォーカスで項目名を確認できるツールチップ。
+     titleだけではキーボードフォーカス時にブラウザが表示しないため別途用意する。
+     .app-sidebarのoverflow-y:autoに切り取られないよう、サイドバー内では場所だけ決め、
+     実際の表示位置はJS側でposition:fixedの左端座標として計算する
+     （レビュー対応：サイドバーのoverflowで表示が切れないようにする）。
+     既定の非表示はPC折りたたみに限定せず.app-sidebar__tooltip自体に持たせる（レビュー対応：
+     以前は.app-shell.is-sidebar-collapsed配下でしか非表示指定がなく、PC展開時・スマホでは
+     このルール自体が適用されないため、通常の項目名ラベルとツールチップ文字が常時重複表示されていた） */
+  .app-sidebar__tooltip {
+    display: none;
+    position: fixed;
+    z-index: 12;
+    padding: 0.25rem var(--space-sm);
+    border-radius: var(--radius-control);
+    background: var(--color-text);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: bold;
+    white-space: nowrap;
+    box-shadow: 0 0.0625rem 0.25rem rgba(0, 0, 0, 0.25);
+    pointer-events: none;
+  }
+  /* 表示条件はPC折りたたみ中のhover・キーボードフォーカス時だけに限定する。
+     PC展開時・スマホでは.app-shell.is-sidebar-collapsedが付かないため、上のdisplay:noneのまま
+     （＝ツールチップ用文字は出ない）で、通常の項目名ラベル（app-sidebar__item-label）だけが見える */
+  .app-shell.is-sidebar-collapsed .app-sidebar__item:hover .app-sidebar__tooltip,
+  .app-shell.is-sidebar-collapsed .app-sidebar__item:focus-visible .app-sidebar__tooltip,
+  .app-shell.is-sidebar-collapsed .app-sidebar__item:focus .app-sidebar__tooltip {
+    display: block;
+  }
+
+  @media (max-width: 48rem) {
+    .app-shell {
+      display: block;
+    }
+    .app-sidebar-wrap {
+      position: static;
+      height: auto;
+    }
+    .app-sidebar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      width: 100%;
+      height: auto;
+      padding: var(--space-xs) var(--space-sm);
+      border-right: 0;
+      border-bottom: 1px solid var(--color-border);
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .app-sidebar__brand,
+    .app-sidebar__group-label {
+      display: none;
+    }
+    .app-sidebar__nav {
+      display: flex;
+      gap: var(--space-xs);
+      width: max-content;
+      margin: 0;
+    }
+    .app-sidebar__item {
+      min-height: 2.5rem;
+      margin: 0;
+      padding: var(--space-xs) var(--space-sm);
+    }
+
+    /* スマホの開閉ボタンは、サイドバーが閉じていても操作できる固定位置に置く
+       （.app-sidebar-wrapがstaticになるため、absolute配置の基準を画面全体に切り替える） */
+    .app-sidebar-toggle-btn {
+      position: fixed;
+      top: var(--space-sm);
+      right: var(--space-sm);
+      left: auto;
+    }
+
+    /* スマホ：開いている間だけサイドバーを本文に重ねて表示する（本文を押し縮めない）。
+       閉じている間はJS側でhidden属性を付けるため、ここでは「開いた時の見た目」だけを定義する */
+    .app-shell.is-sidebar-open .app-sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      z-index: 10;
+      width: 16rem;
+      max-width: 85vw;
+      height: 100vh;
+      overflow-y: auto;
+      box-shadow: 0.125rem 0 1rem rgba(0, 0, 0, 0.25);
+    }
+    .app-shell.is-sidebar-open .app-sidebar__brand {
+      display: flex;
+    }
+    .app-shell.is-sidebar-open .app-sidebar__group-label {
+      display: block;
+    }
+    .app-shell.is-sidebar-open .app-sidebar__nav {
+      display: block;
+      width: auto;
+    }
+    .app-shell.is-sidebar-open .app-sidebar__item {
+      min-height: 2.75rem;
+      padding: var(--space-sm);
+    }
+  }
+
+  /* ヘッダー */
+  .app-header {
+    margin-bottom: var(--space-lg);
+  }
+  .app-header__eyebrow {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: bold;
+    color: var(--color-primary);
+    background: var(--color-primary-soft);
+    padding: 0.125rem var(--space-sm);
+    border-radius: 999px;
+    margin-bottom: var(--space-sm);
+  }
+  .app-header__title {
+    margin-bottom: var(--space-xs);
+  }
+  .app-header__description {
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-sm);
+  }
+  .app-header__company {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+  }
+  .app-header__company-name {
+    color: var(--color-text);
+    font-weight: bold;
+  }
+
+  /* カード */
+  .card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    padding: var(--space-md);
+    margin: var(--space-md) 0;
+  }
+  .card h3 {
+    padding-bottom: var(--space-sm);
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: var(--space-md);
+  }
+  /* 今回の中心価値（営業日のシフト体制）だけ、上部にアクセントラインを付けて視認性を上げる */
+  .card--feature {
+    border-color: var(--color-primary);
+    border-width: 1px;
+    border-top-width: 4px;
+  }
+  .card--feature h3 {
+    font-size: 1.0625rem;
+  }
+
+  .note {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    margin: var(--space-xs) 0 var(--space-sm);
+  }
+
+  /* 通信中・エラー等のメッセージ表示。中身がある時だけ目立たせる */
+  .note.is-active {
+    color: var(--color-text);
+    background: var(--color-surface-subtle);
+    display: inline-block;
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-control);
+  }
+
+  .message-area {
+    margin-top: var(--space-sm);
+    font-size: 0.8125rem;
+    color: var(--color-text);
+  }
+  .message-area:empty {
+    margin-top: 0;
+  }
+
+  /* テーブル（判定詳細・マイスター管理） */
+  .table-scroll {
+    overflow-x: auto;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0;
+    font-size: 0.8125rem;
+  }
+  thead th {
+    background: var(--color-surface-subtle);
+    color: var(--color-text-muted);
+    font-weight: bold;
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+  }
+  th, td {
+    padding: var(--space-sm) var(--space-sm);
+    border-bottom: 1px solid var(--color-border);
+    vertical-align: top;
+  }
+  tbody tr:hover {
+    background: var(--color-surface-subtle);
+  }
+  tbody tr.status-fail:hover,
+  tbody tr.status-warn:hover,
+  tbody tr.status-ok:hover {
+    filter: brightness(0.98);
+  }
+  td {
+    word-break: break-word;
+  }
+
+  /* 判定の意味色（成立=緑／注意=黄／不成立=赤）。時間軸の判定行・詳細テーブルで共通利用する */
+  .status-fail {
+    background: var(--color-danger-bg);
+    color: var(--color-danger);
+  }
+  .status-warn {
+    background: var(--color-warning-bg);
+    color: var(--color-warning);
+  }
+  .status-ok {
+    background: var(--color-success-bg);
+    color: var(--color-success);
+  }
+  /* .note.is-activeは詳細度が.status-*より高く上書きしてしまうため、休憩確保の全体メッセージ用に個別指定する */
+  .note.is-active.status-ok {
+    background: var(--color-success-bg);
+    color: var(--color-success);
+  }
+  .note.is-active.status-fail {
+    background: var(--color-danger-bg);
+    color: var(--color-danger);
+  }
+
+  /* ラベル・フォーム部品 */
+  label {
+    display: inline-block;
+  }
+  input, select {
+    font-family: var(--font-family);
+    font-size: 0.875rem;
+    height: var(--control-height);
+    padding: 0 var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface);
+    color: var(--color-text);
+  }
+  input[type="checkbox"] {
+    height: auto;
+    width: 1.125rem;
+    height: 1.125rem;
+    padding: 0;
+    vertical-align: middle;
+  }
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    gap: var(--space-md);
+    margin-bottom: var(--space-sm);
+  }
+  .form-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+  .form-field--full {
+    grid-column: 1 / -1;
+  }
+  .form-label {
+    font-size: 0.8125rem;
+    font-weight: bold;
+    color: var(--color-text);
+    margin: 0;
+  }
+  .form-required {
+    font-size: 0.6875rem;
+    font-weight: normal;
+    color: var(--color-danger);
+    background: var(--color-danger-bg);
+    border-radius: var(--radius-control);
+    padding: 0 var(--space-xs);
+    margin-left: var(--space-xs);
+    vertical-align: middle;
+  }
+  .form-help {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+  /* シフト登録フォームの「対象営業日」表示。編集不可の値であることが分かるよう、
+     入力欄と似た枠は使わず、背景色だけで区別する */
+  .form-static-value {
+    font-size: 0.875rem;
+    font-weight: bold;
+    color: var(--color-text);
+    background: var(--color-surface-subtle);
+    border-radius: var(--radius-control);
+    padding: var(--space-sm) var(--space-md);
+    margin: 0;
+  }
+  /* レビュー対応（直接シフト登録モーダルのマイスター詳細を折りたたみ 2026-09-16）：
+     従業員選択直後は詳細を閉じておき、必要なときだけ「マイスター情報を見る」で開く。
+     ボタン自体はフォームのtype="submit"ではないため、押しても誤送信しない（既存のtype="button"のまま） */
+  .skill-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    margin-top: var(--space-xs);
+    background: none;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    color: var(--color-text-muted);
+    font-family: var(--font-family);
+    font-size: 0.75rem;
+    font-weight: bold;
+    padding: 0.25rem var(--space-sm);
+    cursor: pointer;
+  }
+  .skill-toggle-btn:hover {
+    background: var(--color-surface-subtle);
+    color: var(--color-text);
+    border-color: var(--color-border-strong);
+  }
+  /* レビュー対応（hiddenがCSSで上書きされる問題の修正 2026-09-16）：display:inline-flexを
+     常時指定すると、JS側のelement.hidden=trueより先にこちらが効いてしまい非表示にならない
+     （クラスセレクタと[hidden]のUAスタイルは詳細度が同じでソース順が勝つため。.btn[hidden]等と
+     同じ理由・同じ対策）。従業員未選択時にtoggleBtn.hidden=trueを設定しても実際には
+     表示され続けていた不具合を、[hidden]優先ルールで解消する */
+  .skill-toggle-btn[hidden] {
+    display: none;
+  }
+  /* シフト登録フォーム内の技能補足カード（選択した従業員の取得マイスター）。
+     画面の主役はシフト登録・事前判定のため、控えめなサイズ・淡い背景に留める */
+  .skill-card {
+    margin-top: var(--space-xs);
+    padding: var(--space-sm);
+    background: var(--color-surface-subtle);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    font-size: 0.75rem;
+  }
+  .skill-card p {
+    margin: 0 0 var(--space-xs);
+  }
+  .skill-card p:last-child {
+    margin-bottom: 0;
+  }
+  .skill-card__guide,
+  .skill-card__hint,
+  .skill-card__note {
+    color: var(--color-text-muted);
+  }
+  .skill-card__label {
+    color: var(--color-text-muted);
+  }
+  .skill-card__empty {
+    color: var(--color-text);
+    font-weight: bold;
+  }
+  .skill-tag-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    margin-bottom: var(--space-xs);
+  }
+  .skill-tag {
+    display: inline-block;
+    background: var(--color-primary-soft);
+    color: var(--color-primary-hover);
+    font-size: 0.6875rem;
+    font-weight: bold;
+    padding: 0.125rem var(--space-sm);
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  /* レビュー対応（hiddenがCSSで上書きされる問題の修正 2026-09-16）：display:inline-blockを
+     常時指定すると、JS側のtag.hidden=trueより先にこちらが効いてしまい非表示にならない
+     （.skill-toggle-btn[hidden]と同じ理由・同じ対策）。実幅に収まらない超過ラベルを
+     hidden属性で隠しても実際には表示され続けていた不具合を解消する */
+  .skill-tag[hidden] {
+    display: none;
+  }
+  /* レビュー対応（従業員名の下へマイスターラベルを配置 2026-09-21）：以前は名前と同じ行に
+     並べ、名前・ラベル列・「＋N件」ボタンで横幅を奪い合っていたため、長い氏名が途中で
+     不自然に改行される問題があった。名前の下の別行（.modal-field--skill-row）に置くことで、
+     氏名側は通常の.modal-field__value（縮小・幅の奪い合いなし）で表示でき、ラベル列は
+     行全体の幅（「＋N件」ボタン分を除く）を計測対象にできる。
+     .skill-tag-listは既定でブロック用途（下にmargin-bottom）だが、ここでは親
+     （.modal-field--skill-row）側の余白で行間を作るため、自分のmargin-bottomは打ち消す。
+     flex: 1 1 autoで「＋N件」ボタンの残り幅を占有させ、overflow: hiddenで、タグを全件
+     挿入してもこのラベル列自身の幅が内容サイズ分に広がらないようにする（親行を
+     nowrapにしたことと合わせて、computed widthが常に実際に使える幅と一致する） */
+  .skill-tag-list--inline {
+    margin-bottom: 0;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* レビュー対応（実幅計測中は折り返しを止める 2026-09-16）：.skill-tag-list（既定でflex-wrap:wrap）の
+     ままJS側で「何件まで収まるか」を計測すると、幅が足りないタグは折り返されて2行目に描画され、
+     getBoundingClientRect().rightが1行目の右端を超えないため「収まっている」と誤判定してしまう。
+     recalculateShiftEditSkillInlineVisibility_の計測中だけこのクラスを付与してnowrapにし、
+     全タグを1行に並べた状態で実際の右端位置を計測してから、収まらない分をhiddenにする。
+     ラベル列自体はoverflow: hiddenで幅が固定されているため、計測中に全タグを詰め込んでも
+     このコンテナ自身の幅（右端の位置）は変化しない */
+  .skill-tag-list--measuring {
+    flex-wrap: nowrap;
+  }
+  /* レビュー対応（展開表示の重複解消 2026-09-16）：以前は別行の「全マイスター」
+     （.skill-tag-list--detail）へ全件を再表示していたため、名前横の常時表示分と重複していた。
+     展開時（toggleSkillDetail_でui.expanded=trueになったとき）は、同じラベル列
+     （.skill-tag-list--inline）へ.skill-tag-list--expandedを追加し、折りたたみ時の
+     overflow: hidden（内容量に関わらずコンテナ幅を「名前の横の残り幅」に固定する指定）を
+     打ち消してoverflow: visibleにする。折り返し（flex-wrap: wrap）も許可し、収まらない分は
+     下の行へ回る。長い名称も読めるよう、折りたたみ時のwhite-space: nowrap（.skill-tagの既定）を
+     打ち消してwhite-space: normalにする（.skill-tag-list--detailで使っていた指定を踏襲） */
+  .skill-tag-list--expanded {
+    overflow: visible;
+    flex-wrap: wrap;
+  }
+  .skill-tag-list--expanded .skill-tag {
+    white-space: normal;
+    word-break: break-word;
+  }
+  /* レビュー対応（展開表示の重複解消 2026-09-16、展開時の折り返しが効かない問題の修正
+     2026-09-21、従業員名の下へマイスターラベルを配置 2026-09-21）：ラベル列を折り返すには、
+     親行（.modal-field--skill-row、通常はflex-wrap: nowrapでラベル列・「＋N件」ボタンを
+     1行に固定している）自体も折り返しを許可する必要がある。展開中だけ
+     .modal-field--skill-row-expandedを追加し、ラベル列・ボタンの先頭位置関係は変えず
+     ラベル列だけが複数行に折り返せるようにする。
+     クラス単体セレクタ（詳細度0,1,0）のままだと、詳細度が同じ.modal-field--skill-row
+     （0,1,0）とCSSソース順の勝敗に依存してしまう（過去に.modal-field--wrapとの間で
+     この理由により展開が効かない不具合があった）ため、
+     .modal-field--skill-row.modal-field--skill-row-expanded（クラス2つの結合、詳細度0,2,0）
+     にして.modal-field--skill-row（0,1,0）より確実に詳細度で上回るようにする。
+     折りたたみ時（.modal-field--skill-row-expandedが付いていない状態）はこのルール自体が
+     適用対象外のままなので、幅計測用のnowrapはそのまま維持される */
+  .modal-field--skill-row.modal-field--skill-row-expanded {
+    flex-wrap: wrap;
+  }
+  /* 「＋N件」ボタン。名前・ラベル列と同じ行に置くため、通常のボタンより小さく控えめにする。
+     hidden既定はJS側で制御する（1件も隠れていない場合は要素ごとhiddenのまま） */
+  .skill-tag-more-btn {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    background: none;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    color: var(--color-text-muted);
+    font-size: 0.6875rem;
+    font-weight: bold;
+    padding: 0.125rem var(--space-sm);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .skill-tag-more-btn:hover {
+    background: var(--color-surface-subtle);
+    color: var(--color-text);
+    border-color: var(--color-border-strong);
+  }
+  /* レビュー対応（hiddenがCSSで上書きされる問題の修正 2026-09-16）：.skill-toggle-btn[hidden]と
+     同じ理由・同じ対策。隠れたラベルが0件のときmoreBtn.hidden=trueにしても、
+     display:inline-flexの常時指定に上書きされ実際には表示され続けていた */
+  .skill-tag-more-btn[hidden] {
+    display: none;
+  }
+  /* レビュー対応（従業員名の下へマイスターラベルを配置 2026-09-21）：以前は氏名とラベル列・
+     「＋N件」ボタンを同じ行（.modal-field--wrap）に並べ、幅を奪い合っていたため、狭い画面・
+     長い氏名で氏名が不自然に改行される問題があった。氏名は通常の.modal-field（ラベル＋値の
+     2要素だけ）に戻し、マイスターラベルは氏名の下の別行（.modal-field--skill-row）へ移す。
+     ラベル行だけを対象にnowrapで固定し、ラベル列（.skill-tag-list--inline、overflow: hidden）が
+     「収まる分だけ」を表示、「＋N件」ボタン（flex: 0 0 auto）が残り幅を圧迫しないようにする。
+     旧仕様（幅計算の再レビュー対応 2026-09-16／同2）にあった、氏名をflex-shrink: 1・
+     min-width: 3remで縮める指定は、氏名がラベル列と幅を奪い合わなくなったため不要になった */
+  .modal-field--skill-row {
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+  /* マイスター情報がない場合（renderSkillTags_がラベルを1件も追加しない場合）は、
+     clearSkillTags_・recalculateSkillInlineVisibility_がこの行自体にhidden属性を付け、
+     不要な空行を残さない（.modal-field[hidden]の既存[hidden]優先ルールで確実に消える） */
+  .modal-field__value {
+    overflow-wrap: anywhere;
+  }
+
+  .form-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    margin-top: var(--space-sm);
+  }
+
+  .btn-frame {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    margin: var(--space-sm) 0;
+  }
+
+  /* ボタン共通 */
+  .btn,
+  .nav-btn,
+  .nav-btn-small,
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-family);
+    height: var(--control-height);
+    padding: 0 var(--space-md);
+    border-radius: var(--radius-control);
+    cursor: pointer;
+    text-decoration: none;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+    box-sizing: border-box;
+  }
+  /* display:inline-flexを常時指定すると、JS側のelement.hidden=trueより先にこちらが効いてしまい
+     非表示にならない（クラスセレクタと[hidden]のUAスタイルは詳細度が同じでソース順が勝つため）。
+     ボタン全種（.btn/.nav-btn/.nav-btn-small/.btn-secondary/.btn-danger）へ共通で
+     [hidden]優先ルールを足す（レビュー対応：モーダル内でJSがhiddenを切り替えるボタンが
+     確実に消えるようにする。判定結果ボタン#judge_open_detail_btn等、hiddenを使う全ボタンに効く） */
+  .btn[hidden],
+  .nav-btn[hidden],
+  .nav-btn-small[hidden],
+  .btn-secondary[hidden],
+  .btn-danger[hidden] {
+    display: none;
+  }
+
+  /* プライマリボタン（シフト登録／この日のシフトを判定／マイスター保存） */
+  .btn {
+    width: auto;
+    min-width: 8rem;
+    border: 0;
+    background: var(--color-primary);
+    color: #fff;
+    font-weight: bold;
+    font-size: 0.875rem;
+  }
+  .btn:hover {
+    background: var(--color-primary-hover);
+    color: #fff;
+  }
+  .btn:active {
+    background: var(--color-primary-pressed);
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* セカンダリボタン（前日／翌日／今日へ戻る／店主用画面に戻る） */
+  .nav-btn,
+  .nav-btn-small,
+  .btn-secondary {
+    background: var(--color-surface);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    font-weight: bold;
+    font-size: 0.875rem;
+  }
+  .nav-btn:hover,
+  .nav-btn-small:hover,
+  .btn-secondary:hover {
+    background: var(--color-primary-soft);
+    border-color: var(--color-primary);
+    color: var(--color-primary-hover);
+  }
+  .nav-btn:active,
+  .nav-btn-small:active,
+  .btn-secondary:active {
+    background: #dce8ff;
+  }
+  .nav-btn {
+    width: var(--control-height);
+    padding: 0;
+    font-size: 1rem;
+  }
+  .nav-btn-small {
+    font-size: 0.8125rem;
+    padding: 0 var(--space-sm);
+  }
+
+  /* 危険ボタン（シフトの削除）。プライマリ操作と混同しないよう危険色にし、実行前にwindow.confirmで最終確認する */
+  .btn-danger,
+  .btn-danger:hover,
+  .btn-danger:active {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-family);
+    height: var(--control-height);
+    padding: 0 var(--space-md);
+    border-radius: var(--radius-control);
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 0.875rem;
+    box-sizing: border-box;
+    border: 1px solid var(--color-danger);
+    background: var(--color-danger-bg);
+    color: var(--color-danger);
+  }
+  .btn-danger:hover {
+    background: var(--color-danger);
+    color: #fff;
+  }
+  .btn-danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* シフト体制カード上部：判定・登録操作（左）と日付操作（右）を同じ場所にまとめるラッパー
+     （レビュー対応：以前は上部に独立した日付カードがあり、シフト登録のたびに画面を往復する
+     必要があった。対象日とシフトを同じカードで確認・操作できるようにする）。
+     十分な横幅ではrowで左右2カラム、幅が足りない場合はcolumnで縦積みにする。
+     DOM順は指示された表示順と同じ「日付操作(.shift-card-top__nav)→判定・登録操作
+     (.shift-card-top__actions)」にしてある（レビュー対応：以前はDOM順を「actions→nav」の
+     ままcolumn-reverseで視覚順だけ逆転させていたため、狭い画面でTabキーが見た目と逆順に
+     移動する分かりにくさがあった）。広い画面での「左actions・右nav」の見た目はDOM順を
+     変えずorderプロパティだけで実現し、Tab順は常にDOM順＝視覚上の自然な流れに一致させる */
+  .shift-card-top {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: wrap;
+    gap: var(--space-md);
+    margin-bottom: var(--space-sm);
+  }
+  /* レビュー対応（不要な高さの解消 2026-09-16）：flex-basis（20rem）は横並び（row）の時だけ
+     カラム幅の基準として必要な指定で、縦並び（column）ではflex-basisが「高さ」の基準値として
+     作用してしまい、中身の実際の高さより大きい空白ができていた。縦並び時は既定のauto
+     （内容に応じた高さ）のままにし、flex-basisは横並び用の@media (min-width: 60rem)
+     ブロック内だけに持たせる */
+  .shift-card-top__actions {
+    min-width: 0;
+  }
+  .shift-card-top__nav.nav-card {
+    min-width: 16rem;
+  }
+  /* 十分な横幅（判定操作の折り返し目安である30remの2倍程度）がある場合だけ左右2カラムにする。
+     それ未満では折り返して縦積みのまま（サイドバー展開・ブラウザ拡大でも要素が重ならず、
+     .judge-action-row・.nav-secondary自体のflex-wrapは維持されるため、それぞれの内部でも折り返す） */
+  @media (min-width: 60rem) {
+    .shift-card-top {
+      flex-direction: row;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+    /* DOM順は「nav→actions」のままだが、広い画面の見た目だけ「左actions・右nav」にする
+       （orderの既定値は0なので、actionsに-1を与えて先頭へ出す。Tab移動順はDOM順のまま
+       変わらないため、ここでの視覚上の並べ替えはフォーカス順序に影響しない） */
+    .shift-card-top__actions {
+      order: -1;
+      flex: 1 1 20rem;
+    }
+    .shift-card-top__nav.nav-card {
+      flex: 0 1 20rem;
+      align-items: flex-end;
+    }
+    .shift-card-top__nav .nav-primary,
+    .shift-card-top__nav .nav-secondary {
+      justify-content: flex-end;
+    }
+  }
+
+  /* 営業日ナビゲーション */
+  .nav-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+  .nav-primary {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-md);
+  }
+  .nav-date {
+    min-width: 12rem;
+    text-align: center;
+  }
+  .nav-date__label {
+    font-size: 1.125rem;
+    font-weight: bold;
+    color: var(--color-text);
+  }
+  .nav-secondary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: center;
+    gap: var(--space-md);
+  }
+  .nav-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    margin: 0;
+  }
+  .nav-field__label {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+  }
+  /* 営業日区分の自動判定結果（読み取り専用表示）。手動選択のselectは廃止した */
+  .nav-field__value {
+    font-size: 0.875rem;
+    font-weight: bold;
+    color: var(--color-text);
+    height: var(--control-height);
+    display: flex;
+    align-items: center;
+  }
+  .nav-field__value.is-error {
+    color: var(--color-danger);
+  }
+  .nav-secondary .nav-btn-small {
+    align-self: flex-end;
+  }
+
+  /* 時間軸（営業日のシフト体制） */
+  /* レビュー対応（縦横スクロールを単一コンテナへ統合 2026-09-16）：以前は横スクロール
+     （.timeline-scroll）と縦スクロール（.timeline-body-scroll、従業員行だけを別コンテナで囲む）を
+     別々に持たせていたが、それぞれが独立したスクロールコンテナになるため、氏名列
+     （position:sticky; left:0）の基準は最も近いスクロール祖先である.timeline-body-scrollになり、
+     外側の.timeline-scrollを横スクロールしても氏名列が可視領域の左端に固定されない問題があった。
+     また、縦スクロールバーの有無で.timeline-body-scrollの実効幅が見出し・判定行と変わり、
+     時間軸の位置がずれる問題もあった。
+     この2件を解消するため、縦横スクロールを.timeline-scroll単一コンテナへまとめる
+     （overflow: auto）。見出し行・判定行はtop方向のposition:stickyで上固定、氏名列は
+     left方向のposition:stickyで左固定にする（同じ祖先内なので両方が可視領域基準で効く）。
+     罫線・角丸のクリップは.timeline-scroll側で行う（.timeline-table側にoverflow:hiddenを
+     置くとそこが新たなスクロールコンテナ扱いになり、stickyが効かなくなるため付けない） */
+  .timeline-scroll {
+    overflow: auto;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    /* 「時間見出し＋判定行＋従業員最大6人分」を高さの上限の目安にする変数
+       （レビュー対応：人数が増えてもページ全体の縦スクロールを増やさない 2026-09-16）。
+       各行の高さは既存の--control-height（2.25rem）に統一し、見出し・判定行にも
+       同じmin-heightを明示することで、6行という目安をcalc()で安定して計算できるようにする */
+    --timeline-row-height: var(--control-height);
+    --timeline-visible-employee-rows: 6;
+    /* 見出し1行＋判定1行＋従業員6行の高さに、行間の境界線7本ぶん（8行のうち最終行以外）を足す。
+       6人未満の場合はcontent-fit（内容に応じた高さ）にするため、heightではなくmax-heightだけを
+       指定し、実際の行数が6行未満なら自然にそれより低くなる（空白の行は作らない） */
+    max-height: calc(var(--timeline-row-height) * (var(--timeline-visible-employee-rows) + 2) + (var(--timeline-visible-employee-rows) + 2 - 1) * 1px);
+  }
+  .timeline-table {
+    min-width: 56.25rem;
+  }
+  .timeline-row {
+    display: flex;
+    align-items: stretch;
+    min-height: var(--timeline-row-height);
+    border-bottom: 1px solid var(--color-border);
+    box-sizing: border-box;
+  }
+  .timeline-row:last-child {
+    border-bottom: 0;
+  }
+  .timeline-row.timeline-header {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: var(--color-surface-subtle);
+    border-bottom: 1px solid var(--color-border-strong);
+    font-weight: bold;
+  }
+  .timeline-row.timeline-judge-row {
+    position: sticky;
+    /* 見出し行（1行ぶん＋境界線1px）の直下に固定する */
+    top: calc(var(--timeline-row-height) + 1px);
+    z-index: 3;
+    background: var(--color-surface-subtle);
+    border-top: none;
+    border-bottom: 2px solid var(--color-border-strong);
+  }
+  .timeline-name {
+    flex: 0 0 9rem;
+    position: sticky;
+    left: 0;
+    background: inherit;
+    background-color: var(--color-surface);
+    padding: var(--space-sm);
+    border-right: 1px solid var(--color-border);
+    box-sizing: border-box;
+    z-index: 1;
+    font-size: 0.8125rem;
+    display: flex;
+    align-items: center;
+  }
+  /* 見出し・判定行の氏名セルは、上方向（行自体のsticky）と左方向（氏名列自体のsticky）が
+     交差する左上の固定領域になる。通常の従業員行の氏名セル（z-index:1）より確実に手前へ
+     出るよう、交差部分だけz-indexを上げる（レビュー対応：固定要素の交差部分で文字・バーが
+     重ならないようにする） */
+  .timeline-header .timeline-name,
+  .timeline-judge-row .timeline-name {
+    background-color: var(--color-surface-subtle);
+    z-index: 4;
+  }
+  .timeline-track {
+    flex: 1 1 auto;
+    position: relative;
+    min-height: var(--timeline-row-height);
+    background-image: repeating-linear-gradient(
+      to right,
+      var(--color-border) 0,
+      var(--color-border) 1px,
+      transparent 1px,
+      transparent 6.25%
+    );
+  }
+  .timeline-header .timeline-track,
+  .timeline-judge-row .timeline-track {
+    display: flex;
+    background-image: none;
+  }
+  .timeline-hour-label {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    padding: var(--space-sm) 0 var(--space-sm) 0.125rem;
+    box-sizing: border-box;
+  }
+  /* 小さい画面では画面の高さに合わせて表示領域を縮める（レビュー対応 2026-09-16）。
+     8行固定のmax-heightのままだと、画面の高さが低い端末では見出し・判定行・操作ボタンを
+     合わせた全体が画面からはみ出す可能性があるため、ビューポート高さ基準の上限も併用する。
+     どちらか小さい方が優先されるようminで指定する（8行分より画面が低ければ画面基準に縮む） */
+  @media (max-width: 30rem) {
+    .timeline-scroll {
+      max-height: min(calc(var(--timeline-row-height) * (var(--timeline-visible-employee-rows) + 2)), 45vh);
+    }
+  }
+  .timeline-judge-cell {
+    flex: 1 1 0;
+    text-align: center;
+    font-size: 0.6875rem;
+    font-weight: bold;
+    line-height: 1.75rem;
+    box-sizing: border-box;
+    border-right: 1px solid rgba(255, 255, 255, 0.7);
+  }
+  /* シフトバーはbutton要素（削除操作の起点）。ブラウザ標準のボタン枠・余白・フォントを打ち消し、
+     見た目は変更前のdivバーと同じになるようにする。危険色（赤）は常時つけず、削除であることは
+     案内文・確認ダイアログで伝える */
+  .timeline-bar {
+    position: absolute;
+    top: 0.3125rem;
+    bottom: 0.3125rem;
+    background: var(--color-primary);
+    color: #fff;
+    border: 0;
+    margin: 0;
+    border-radius: var(--space-xs);
+    font-family: var(--font-family);
+    font-size: 0.6875rem;
+    line-height: 1.3;
+    text-align: left;
+    padding: 0.125rem var(--space-xs);
+    overflow: hidden;
+    white-space: nowrap;
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: background-color 0.15s;
+  }
+  .timeline-bar:hover {
+    background: var(--color-primary-hover);
+  }
+  .timeline-bar:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+  /* 希望シフトの薄いバー。登録済み（濃いバー）と混同しないよう、背景を薄色にしつつ
+     文字色は読みやすいコントラストを保つ（色だけで状態を区別しないよう、バー内テキストも
+     「希望」+時刻にしている＝renderEmployeeRows側の文言）。破線の枠で「未確定」の見た目を添える */
+  .timeline-bar--wish {
+    background: var(--color-primary-soft);
+    color: var(--color-primary-hover);
+    border: 1px dashed var(--color-primary);
+  }
+  .timeline-bar--wish:hover {
+    background: #dce8ff;
+  }
+  /* レビュー対応（従業員希望シフト一括提出 2026-09-21）：締切後に新規提出・変更された
+     時間希望のバーだけを薄い赤にする（.timeline-bar--wishと併用するクラス。文言は変えず、
+     背景・枠線の色だけを変える。色だけを唯一の手掛かりにしないという要件は従業員側画面
+     （view_employee_wish.html）で文言も併用することで満たすため、店主画面の時間軸バー自体には
+     「期限後」の文字を追加しない＝本人判断のとおり） */
+  .timeline-bar--wish-overdue {
+    background: var(--color-danger-bg);
+    color: var(--color-danger);
+    border-color: var(--color-danger);
+  }
+  .timeline-bar--wish-overdue:hover {
+    background: #f6c0c7;
+  }
+
+  /* 「希望シフトを追加」「直接シフトを登録」の操作行。既存の.judge-action-row（横並び・折り返し）を
+     そのまま使い、判定操作行との間に少し余白を足すためだけの軽い追加クラス */
+  .shift-action-row {
+    margin-top: var(--space-md);
+  }
+
+  /* マイスター登録画面 */
+  .meister-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-sm);
+  }
+  .meister-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    margin: 0;
+  }
+  .meister-item__name {
+    font-weight: bold;
+  }
+
+  /* マイスター一括管理（店主用の独立ページ）。従業員×マイスターの表は横に長くなるため、
+     氏名列だけ左端に固定し、横スクロール中も従業員を識別できるようにする */
+  .meister-bulk-table {
+    min-width: 40rem;
+  }
+  .meister-bulk-name-cell {
+    position: sticky;
+    left: 0;
+    background: var(--color-surface);
+    z-index: 1;
+    white-space: nowrap;
+    text-align: left;
+  }
+  thead .meister-bulk-name-cell {
+    background: var(--color-surface-subtle);
+  }
+  .meister-bulk-cell {
+    text-align: center;
+    white-space: nowrap;
+  }
+  .meister-bulk-cell input[type="checkbox"] {
+    cursor: pointer;
+  }
+
+  /* マイスター一括管理の内部スクロール（2026-09-24、レビュー対応で高さを再計算 2026-09-24）：
+     従業員が増えてもページ全体が長くなりすぎないよう、この表だけ縦スクロールにする。
+     共通.table-scrollは他画面（判定詳細モーダル等）でも使っているため高さ制限をここに書かず、
+     この一覧専用の修飾クラスtable-scroll--meister-bulkにだけ適用する。
+     1行あたりの高さは、th/tdのpadding（--space-sm上下＝0.5rem×2）＋内容の高さ（tableの
+     font-size 0.8125remにbodyのline-height 1.6を掛けたテキスト行送り、約1.3rem。
+     チェックボックスの実サイズはこれより小さく収まるためテキスト行が支配的）＋
+     border-bottom（1px）で、約2.36rem/行。見出し1行＋本文10行で約2.36rem×11≈25.9remとなるため、
+     26remを基本値にする（文字縮小・行の圧縮では合わせない）。小さい画面・拡大表示では
+     引き続きvhで頭打ちにし、10人未満なら内容量なりの高さになりmax-heightにより
+     余分な空白は生まれない（厳密な行数計測はJSで行わず、CSSの概算値に留める） */
+  .table-scroll--meister-bulk {
+    max-height: min(26rem, 70vh);
+    overflow-y: auto;
+  }
+  /* コンテナ自体をキーボード（Tab）でフォーカスし、矢印キー等でスクロールできるようにする
+     （tabindex="0"はHTML側で付与）。フォーカスリングは他の操作要素と同じ--focus-ringに揃える */
+  .table-scroll--meister-bulk:focus {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+  /* 縦スクロール中も列見出し（氏名・マイスター名）を上に固定する。氏名列は本文・見出しの
+     両方が横方向のsticky（left:0、既存の.meister-bulk-name-cellでz-index:1）を持つため、
+     見出し行だけで重なり順を一段高くしないと、スクロール時に本文の氏名セルが技能見出しへ
+     並ぶ位置で重なりかねない（レビュー対応 2026-09-24：本文の氏名セルと列見出しが同じ
+     z-index:1だった）。以下の3段で明確に分ける：
+       1: 本文の氏名列（.meister-bulk-name-cell、既存のまま）
+       2: 列見出し（縦方向stickyのthead th全般）
+       3: 左上の氏名見出し（横方向・縦方向の両方のstickyが重なる交点。最前面に出す）
+     不透明な背景（既存のbackground指定）と合わせ、縦横スクロール時に本文の氏名が
+     技能見出しを覆わないようにする */
+  .table-scroll--meister-bulk thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  .table-scroll--meister-bulk thead .meister-bulk-name-cell {
+    z-index: 3;
+  }
+
+  /* 技能別の育成優先度（マイスター一括管理画面上部、2026-09-22）。
+     既存の.card--feature・色トークン・余白トークンを再利用し、この画面固有のカード内装飾だけを追加する。
+     PCでは横並び・折り返し、スマホでは1列に折り返して読める（既存の.wish-status-rowと同じ考え方） */
+  .skill-priority-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm) var(--space-md);
+  }
+  .skill-priority-card {
+    flex: 1 1 12rem;
+    min-width: 12rem;
+    background: var(--color-surface-subtle);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    padding: var(--space-sm);
+  }
+  .skill-priority-card__name {
+    font-weight: bold;
+    margin-bottom: var(--space-xs);
+  }
+  .skill-priority-card__status {
+    font-size: 0.8125rem;
+    margin-bottom: var(--space-xs);
+  }
+  /* 色だけに依存せず状態文言・人数を必ずテキストで示す前提のうえで、0人・1人だけ控えめな警告色を添える */
+  .skill-priority-card--none .skill-priority-card__status {
+    color: var(--color-danger);
+  }
+  .skill-priority-card--single .skill-priority-card__status {
+    color: var(--color-warning);
+  }
+  .skill-priority-card--multiple .skill-priority-card__status {
+    color: var(--color-text);
+  }
+  /* 「育成候補を見る」ボタン（0人・1人のカードだけに追加される）。.nav-btn-small相当の見た目を
+     カード内でも使えるよう、上に余白を追加する（.nav-btn-small自体のスタイルはcss.html内で既に
+     クリック可能と分かる見た目になっている） */
+  .skill-priority-card__candidate-btn {
+    margin-top: var(--space-xs);
+  }
+
+  @media (max-width: 30rem) {
+    .skill-priority-card {
+      flex: 1 1 100%;
+    }
+  }
+
+  @media (max-width: 30rem) {
+    .nav-primary {
+      gap: var(--space-sm);
+    }
+    .nav-date {
+      min-width: 0;
+    }
+    .nav-date__label {
+      font-size: 1rem;
+    }
+  }
+
+  /* 休憩結果の「候補・注意」列。人数不足／持ち場不足／参考情報を項目ごとに読めるよう幅を広く取り、
+     対象者・勤務時間・必要休憩・状態の各列は不要に折り返さないようにする。狭い画面では
+     table-scroll（既存）側の横スクロールに任せ、表自体を無理に押し潰さない */
+  #break_result_body td:not(.break-detail-cell),
+  .break-detail-column {
+    white-space: nowrap;
+  }
+  .break-detail-column,
+  .break-detail-cell {
+    min-width: 20rem;
+    white-space: normal;
+  }
+  .break-detail-list {
+    margin: 0;
+    padding-left: 1.125rem;
+  }
+  .break-detail-list li {
+    margin: 0.125rem 0;
+  }
+
+  /* 1時間枠別判定の「メッセージ」列。休憩結果の「候補・注意」列と同じ考え方で、
+     人数不足／持ち場不足／参考を項目ごとに読めるよう幅を広く取る */
+  #judge_result_body td:not(.judge-message-cell),
+  .judge-message-column {
+    white-space: nowrap;
+  }
+  .judge-message-column,
+  .judge-message-cell {
+    min-width: 20rem;
+    white-space: normal;
+  }
+  .judge-message-list {
+    margin: 0;
+    padding-left: 1.125rem;
+  }
+  .judge-message-list li {
+    margin: 0.125rem 0;
+  }
+
+  /* 判定詳細テーブルの詳細（成立時は実効予備内訳、不成立時は人数不足／持ち場不足の説明）。
+     初期状態では閉じ、「詳細を見る」を押した対象時間枠の行の直下だけに展開する */
+  .judge-reserve-details {
+    margin-top: 0.25rem;
+  }
+  .judge-reserve-details summary {
+    cursor: pointer;
+    color: var(--color-primary);
+    font-size: 0.8125rem;
+  }
+  .judge-reserve-details .judge-message-list {
+    margin-top: 0.25rem;
+  }
+
+  /* 判定詳細テーブルの判定列。行全体を緑・赤で強く塗らず、文字付き色ラベル（バッジ）を最大2つ並べて
+     状態を表す（判定詳細テーブル_UI簡素化_最小仕様.md）。時間軸セル・休憩結果テーブルの配色（.status-*）
+     とは独立させ、他の表へ影響させない */
+  .judge-badge-cell {
+    white-space: nowrap;
+  }
+  .judge-badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: bold;
+    padding: 0.125rem var(--space-sm);
+    border-radius: 999px;
+    margin-right: var(--space-xs);
+  }
+  .judge-badge:last-child {
+    margin-right: 0;
+  }
+  .judge-badge-ok {
+    background: var(--color-success-bg);
+    color: var(--color-success);
+  }
+  .judge-badge-fail {
+    background: var(--color-danger-bg);
+    color: var(--color-danger);
+  }
+  /* 判定結果一覧の状態別絞り込みボタン（仮説検証用の最小実装）。
+     選択中のボタンは背景色だけでなく、枠線の太さとチェック記号（✓、JS側でラベル先頭に付与）でも
+     識別できるようにする。スマートフォン幅でもボタンが画面外へはみ出さないよう折り返す */
+  /* display:flexを常時指定すると、JS側のelement.hidden=trueより先にこちらが効いてしまい
+     非表示にならない（クラスセレクタと[hidden]のUAスタイルは詳細度が同じでソース順が勝つため。
+     .modal-overlayと同じ対策）。既定はdisplay:noneにし、hidden属性がない時だけflexにする */
+  .judge-filter-bar {
+    display: none;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    margin: 0 0 var(--space-md);
+  }
+  .judge-filter-bar:not([hidden]) {
+    display: flex;
+  }
+  .judge-filter-btn {
+    display: inline-flex;
+    align-items: center;
+    font-family: var(--font-family);
+    font-size: 0.8125rem;
+    font-weight: bold;
+    height: var(--control-height);
+    padding: 0 var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-surface);
+    color: var(--color-text);
+    cursor: pointer;
+    box-sizing: border-box;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+  }
+  .judge-filter-btn:hover {
+    background: var(--color-surface-subtle);
+    border-color: var(--color-border-strong);
+  }
+  .judge-filter-btn.is-selected {
+    border-width: 2px;
+    border-color: var(--color-primary);
+    background: var(--color-primary-soft);
+    color: var(--color-primary-hover);
+  }
+  .judge-filter-empty {
+    color: var(--color-text-muted);
+    text-align: center;
+  }
+
+  /* シフトの変更・削除モーダル */
+  /* display:flexを常時指定すると、JS側のelement.hidden=trueより先にこちらが効いてしまい
+     非表示にならない（クラスセレクタと[hidden]のUAスタイルは詳細度が同じでソース順が勝つため）。
+     既定はdisplay:noneにし、hidden属性がない時だけ:not([hidden])でflexにする */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(50, 50, 50, 0.5);
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-md);
+    /* サイドバー開閉ボタン（z-index:11）・サイドバー本体（z-index:9〜10）より必ず手前に来るようにする
+       （レビュー対応：以前はボタンの方が手前でモーダル表示中も操作できてしまっていた。重なり順に
+       加えて、app_sidebar.html側でモーダル表示中は.app-shellへinertを付け、クリック・Tab移動の
+       どちらでもサイドバー側へ操作が届かないようにしている。z-index調整はあくまで見た目の重なりの
+       修正で、操作不能自体はinertが担う） */
+    z-index: 20;
+  }
+  .modal-overlay:not([hidden]) {
+    display: flex;
+  }
+  .modal {
+    background: var(--color-surface);
+    border-radius: var(--radius-card);
+    padding: var(--space-lg) var(--space-md);
+    max-width: 24rem;
+    width: 100%;
+    box-shadow: 0 0.25rem 1rem rgba(0, 0, 0, 0.2);
+  }
+  .modal h3 {
+    margin: 0 0 var(--space-md);
+  }
+  .modal-field {
+    display: flex;
+    gap: var(--space-sm);
+    margin: 0 0 var(--space-xs);
+    font-size: 0.875rem;
+  }
+  /* display:flexを常時指定すると、JS側のelement.hidden=trueより先にこちらが効いてしまい
+     非表示にならない（レビュー対応：shift_edit_modal_wish_fieldが、希望IDのない勤務の
+     変更モーダルで消えない問題への対応。[hidden]付きセレクタは詳細度が高くなるため、
+     ソース順に関係なく優先される） */
+  .modal-field[hidden] {
+    display: none;
+  }
+  .modal-field__label {
+    color: var(--color-text-muted);
+    flex: 0 0 auto;
+  }
+  .modal-field__value {
+    font-weight: bold;
+  }
+  .modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    margin-top: var(--space-md);
+  }
+
+  /* 判定操作専用の横並びラッパー（仮説検証用の最小実装）。既存の.btn-frame（column方向、
+     他画面のボタン＋メッセージ縦積みに使用）は変更せず、判定カードだけに使う専用クラスを追加する。
+     「この日のシフトを判定」「判定結果を見る」「要約」を横に並べ、狭い画面ではflex-wrapで折り返す。
+     「判定中...」やエラーメッセージ（judge_message）はこのラッパーの外、下に別途表示する */
+  .judge-action-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm) var(--space-md);
+    margin: var(--space-sm) 0;
+  }
+
+  /* メイン画面（判定ボタン付近）に残す判定結果の要約。詳細な時間帯一覧・説明文は出さず、
+     状態別件数の一行だけをコンパクトに表示する（仮説検証用の最小実装）。
+     .noteはdisplayを明示していないため通常hidden属性で消えるが、.judge-action-row内で
+     .btn-secondary（display:inline-flex常時指定）と隣接して扱う都合上、要約側も同じ確実な
+     hidden制御にしておく（将来.noteにdisplay指定が加わっても壊れないようにするため） */
+  .judge-summary {
+    display: block;
+    font-weight: bold;
+    margin: 0;
+  }
+  .judge-summary[hidden] {
+    display: none;
+  }
+
+  /* 「判定結果を見る」ボタン。.btn-secondary[hidden]（上のボタン共通ルール）で既に
+     display:noneになるため、このID個別ルールは本来不要だが、既存の回帰確認対象として
+     壊さないようそのまま残す（詳細度はIDセレクタの方がさらに高いため、共通ルールと矛盾しない） */
+  #judge_open_detail_btn {
+    display: none;
+  }
+  #judge_open_detail_btn:not([hidden]) {
+    display: inline-flex;
+  }
+
+  /* 判定詳細モーダル（仮説検証用の最小実装）。基本の.modal（シフト変更・削除用、max-width 24rem）
+     とは別に、判定表を確認できる十分な横幅・縦方向のスクロールを持つ修飾クラスを重ねる。
+     ページ全体ではなくモーダル内部（.table-scroll側）をスクロールさせ、モーダル自体の
+     高さは画面からはみ出さないよう上限を付ける */
+  .modal--judge-detail {
+    max-width: 56rem;
+    display: flex;
+    flex-direction: column;
+    max-height: min(85vh, 48rem);
+  }
+  .modal--judge-detail__table-scroll {
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  /* スマートフォン幅では画面いっぱいに近い表示にし、横スクロールに頼らず縦スクロールで読めるようにする */
+  @media (max-width: 40rem) {
+    .modal--judge-detail {
+      max-width: 100%;
+      width: 100%;
+      max-height: 92vh;
+    }
+  }
+
+  /* レビュー対応（直接シフト登録モーダルの本文スクロール化 2026-09-16）：従業員選択後に
+     マイスター詳細が開くと縦長になり、下部の登録・キャンセルボタンが画面からはみ出して
+     押しづらくなっていた。.modal--judge-detailと同じ考え方で、モーダル自体はflex縦積みにし、
+     本文（.modal-body-scroll）だけをoverflow-yさせ、.modal-actions（登録・キャンセル）は
+     flex:0 0 autoで常に画面内に残す。エラーメッセージ（shift_submit_message）は本文側に
+     含めているため、操作領域が隠すことはない */
+  .modal--form-scroll {
+    display: flex;
+    flex-direction: column;
+    max-height: min(90vh, 40rem);
+  }
+  /* .modal--form-scrollを重ねるモーダルは、<form>を持つもの（直接シフト登録）と
+     持たないもの（シフトの変更・削除、レビュー対応 2026-09-16で追加適用）の両方がある。
+     .modal-body-scrollは.modal--form-scrollの直接の子（<form>ありなら<form>の直接の子）と
+     なる想定で、どちらの構成でも.modal-body-scroll自体のflex:1 1 auto; min-height:0が
+     縮小・スクロールを担うため、<form>側には特別な指定が要らない。<form>を挟む構成のときも
+     <form>がflexアイテムとして縮小できるよう、ここでdisplay:flexにしておく */
+  .modal--form-scroll form {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .modal-body-scroll {
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .modal--form-scroll .modal-actions {
+    flex: 0 0 auto;
+  }
+
+  /* 育成候補モーダル（view_meister_bulk.html、07_ブラッシュアップ/02_企画・設計/
+     育成候補提示_最小仕様.md）。.modal--form-scroll（見出し＋本文スクロール）をそのまま使い、
+     候補が多い場合はモーダル本文だけがスクロールし、画面全体は不必要に伸びない。
+     判定詳細モーダル（.modal--judge-detail）よりは狭いが、氏名・2行の判断材料を1候補あたりで
+     読みやすい幅にするため、既定の.modal（24rem）より少し広げる。
+     月単位化（2026-09-24）：前半・後半のトグル用だった.training-modal-period-toggleは
+     ラジオボタンごと削除した。希望提出画面・提出状況画面が使う前半・後半トグルのCSSとは
+     別クラスのため、そちらには影響しない */
+  .modal--training-candidate {
+    max-width: 32rem;
+  }
+  .training-modal-period-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm) var(--space-md);
+    margin-bottom: var(--space-md);
+  }
+  .training-modal-period-inputs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+  .training-modal-period-inputs input[type="number"] {
+    width: 5rem;
+  }
+  .training-candidate-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+  .training-candidate-row {
+    background: var(--color-surface-subtle);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    padding: var(--space-sm);
+    overflow-wrap: break-word;
+  }
+  .training-candidate-row__name {
+    font-weight: bold;
+    margin-bottom: var(--space-xs);
+  }
+  .training-candidate-row__detail {
+    font-size: 0.8125rem;
+    color: var(--color-text-muted);
+  }
+
+  /* 従業員希望シフト一括提出（view_employee_wish.html、2026-09-21）。
+     店主用の画面（.card--feature等）と共通のトークン・部品はそのまま再利用し、
+     この画面固有の部分（確認用注記・期間トグル・カレンダー・回答区分トグル・確認一覧）だけを追加する */
+
+  /* 「確認用画面です。従業員選択はログインではありません」の注記。認証済み画面と誤認されないよう、
+     警告色に近いトーンで常に目立たせる（本人が明示を指示した文言、非表示にしない） */
+  .wish-demo-notice {
+    background: var(--color-warning-bg);
+    color: var(--color-warning);
+    border: 1px solid var(--color-warning);
+    border-radius: var(--radius-control);
+    padding: var(--space-sm) var(--space-md);
+    font-weight: bold;
+    font-size: 0.8125rem;
+    margin-bottom: var(--space-md);
+  }
+
+  /* 前半／後半、時間希望／出勤不可の切り替え。ラジオボタン相当だが、モーダル内の「＋N件」等と
+     同じ考え方でbutton要素＋aria-pressed／is-selectedクラスにする（キーボード操作もEnter/Spaceで
+     完結し、選択中かどうかは背景色だけでなくis-selectedクラスの有無でも判別できる） */
+  .wish-period-toggle,
+  .wish-answer-toggle {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+  }
+  .wish-period-btn,
+  .wish-answer-btn {
+    display: inline-flex;
+    align-items: center;
+    height: var(--control-height);
+    padding: 0 var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-family: var(--font-family);
+    font-size: 0.8125rem;
+    font-weight: bold;
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+  .wish-period-btn:hover,
+  .wish-answer-btn:hover {
+    background: var(--color-surface-subtle);
+    border-color: var(--color-border-strong);
+  }
+  .wish-period-btn.is-selected,
+  .wish-answer-btn.is-selected {
+    border-width: 2px;
+    border-color: var(--color-primary);
+    background: var(--color-primary-soft);
+    color: var(--color-primary-hover);
+  }
+
+  /* カレンダー（対象期間の日付グリッド）。スマホ幅でも日付と状態が対応して読めるよう、
+     auto-fillの最小幅を確保しつつ折り返す（横スクロールに頼らない） */
+  .wish-calendar {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(6rem, 1fr));
+    gap: var(--space-xs);
+    margin: var(--space-sm) 0 var(--space-md);
+  }
+  .wish-day-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.125rem;
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-family: var(--font-family);
+    cursor: pointer;
+    text-align: left;
+    box-sizing: border-box;
+  }
+  .wish-day-cell:hover {
+    border-color: var(--color-primary);
+  }
+  .wish-day-cell__date {
+    font-size: 0.8125rem;
+    font-weight: bold;
+  }
+  .wish-day-cell__status {
+    font-size: 0.6875rem;
+    color: var(--color-text-muted);
+  }
+  /* 選択中（次の一括設定の対象）。色だけでなく枠線の太さでも区別する */
+  .wish-day-cell--selected {
+    border-width: 2px;
+    border-color: var(--color-primary);
+    background: var(--color-primary-soft);
+  }
+  .wish-day-cell--selected .wish-day-cell__status {
+    color: var(--color-primary-hover);
+  }
+  /* まだ「まとめて提出」していない変更がある日。選択中とは別の視覚的手掛かり（背景色）を使う */
+  .wish-day-cell--pending:not(.wish-day-cell--selected) {
+    background: var(--color-warning-bg);
+  }
+  .wish-day-cell--pending .wish-day-cell__status {
+    color: var(--color-warning);
+    font-weight: bold;
+  }
+  /* 勤務登録済み・要店主確認の日は選択できない（入力部品の無効化に相当）。
+     クリックできないことが分かるよう、カーソルと不透明度を変える */
+  .wish-day-cell--disabled {
+    cursor: not-allowed;
+    opacity: 0.7;
+    background: var(--color-surface-subtle);
+  }
+  .wish-day-cell--disabled .wish-day-cell__status {
+    font-weight: bold;
+    color: var(--color-text);
+  }
+  /* 保存済みの期限後提出（2026-09-25、レビュー対応・指摘1）。店主画面の期限後バー
+     （.timeline-bar--wish-overdue）と同じ色トークンで薄い赤にする。文言は追加せず、
+     色だけに依存しないための識別はセルのaria-labelへ委ねる（本人判断のとおり） */
+  .wish-day-cell--after-deadline {
+    background: var(--color-danger-bg);
+  }
+  .wish-day-cell--after-deadline .wish-day-cell__status {
+    color: var(--color-danger);
+  }
+
+  .wish-apply-panel {
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border);
+  }
+
+  /* 最終提出操作の区切り（2026-09-25、選択日への一括設定カード内へ提出操作を統合した際に追加）。
+     カレンダー・一括設定操作のあとに続く最終操作だと分かるよう、.wish-apply-panelと同じ考え方で
+     上に罫線を引いて区切る */
+  .wish-submit-panel {
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-border);
+  }
+
+  @media (max-width: 30rem) {
+    .wish-calendar {
+      grid-template-columns: repeat(auto-fill, minmax(5rem, 1fr));
+    }
+  }
+
+  /* 希望シフト提出状況（view_wish_status.html、2026-09-22）。店主向けの表示専用画面。
+     店主用の共通トークン・部品（.card--feature、.wish-period-toggle等）をそのまま再利用し、
+     この画面固有の部分（上部集計・従業員別一覧）だけを追加する */
+
+  /* 上部集計。dl/dtで「ラベル＋件数」を対にする（見出し・値をテキストとして明示し、色だけに依存しない） */
+  .wish-status-counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm) var(--space-lg);
+    margin: 0;
+  }
+  .wish-status-counts__label {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+  .wish-status-counts__value {
+    font-size: 1.125rem;
+    font-weight: bold;
+    margin: 0 0 var(--space-sm);
+  }
+
+  /* 従業員別の状況一覧。1行1従業員、スマホ幅でも折り返して読める */
+  .wish-status-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+  .wish-status-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    border-bottom: 1px solid var(--color-border);
+    font-size: 0.8125rem;
+  }
+  .wish-status-row__name {
+    flex: 0 0 8rem;
+    font-weight: bold;
+  }
+  .wish-status-row__status {
+    font-weight: bold;
+  }
+  .wish-status-row__count,
+  .wish-status-row__remaining {
+    color: var(--color-text-muted);
+    font-size: 0.75rem;
+  }
+  /* 状態ごとの行背景・状態文言の色（色だけでなくテキストの状態文言と併用するための補助） */
+  .wish-status-row--conflict {
+    background: var(--color-danger-bg);
+  }
+  .wish-status-row--conflict .wish-status-row__status {
+    color: var(--color-danger);
+  }
+  .wish-status-row--none .wish-status-row__status {
+    color: var(--color-warning);
+  }
+  .wish-status-row--partial .wish-status-row__status {
+    color: var(--color-text);
+  }
+  .wish-status-row--complete .wish-status-row__status {
+    color: var(--color-success);
+  }
+
+  @media (max-width: 30rem) {
+    .wish-status-row__name {
+      flex: 0 0 auto;
+    }
+  }
+
+  /* 通信失敗時・success:false時だけ表示する再読み込みボタン（レビュー対応 2026-09-22、指摘2）。
+     メッセージと横並びにし、既存画面を縦に大きく圧迫しないコンパクトな高さにする */
+  .wish-status-message-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+  }
+  .wish-status-message-row .message-area {
+    margin-top: var(--space-sm);
+  }
+  .wish-status-retry-btn {
+    height: 1.75rem;
+    min-width: 0;
+    padding: 0 var(--space-sm);
+    font-size: 0.75rem;
+    margin-top: var(--space-sm);
+  }
+
+  /* モーダル見出し＋閉じるボタンの行（判定詳細モーダルで使用。シフト変更・削除モーダルは
+     キャンセルボタンをmodal-actions側に持つため、見出し行に閉じるボタンは置いていない） */
+  .modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+  }
+  .modal-header h3 {
+    margin: 0;
+  }
+  .modal-close-btn {
+    flex: 0 0 auto;
+    width: var(--control-height);
+    height: var(--control-height);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    font-size: 1.125rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .modal-close-btn:hover {
+    background: var(--color-surface-subtle);
+    color: var(--color-text);
+    border-color: var(--color-border-strong);
+  }
+</style>

@@ -1,0 +1,219 @@
+<script>
+
+      /**
+       *  希望シフト提出状況（view_wish_status.htmlのクライアント側）。
+       *  07_ブラッシュアップ/02_企画・設計/希望シフト提出状況_最小仕様.md を参照。
+       *  店主向けの表示専用画面。この画面から希望・勤務・従業員情報を変更する操作は一切置かない
+       *  （保存・削除・更新系のgoogle.script.run呼び出しをこのファイルへ持たない）。
+       *
+       *  状態設計:
+       *    wishStatusYear_/Month_/Period_ : 現在選択中の対象期間
+       *    wishStatusRequestSequence_     : 期間切替の連番。古い通信結果の描画を防ぐ
+       *                                     （js_employee_wish.htmlのwishPeriodRequestSequence_と同じ考え方）
+       */
+
+      var wishStatusYear_ = 0
+      var wishStatusMonth_ = 0
+      var wishStatusPeriod_ = 'first_half'
+      var wishStatusRequestSequence_ = 0
+
+      var WISH_STATUS_LABELS_ = {
+        conflict: '要確認',
+        none: '未提出',
+        partial: '一部提出',
+        complete: '提出済み'
+      }
+
+      /**
+       *  画面初期化。初期値は現在年月と、今日を含む前半／後半（js_employee_wish.htmlの
+       *  initEmployeeWishScreen_と同じ規則）。
+       */
+      function initWishStatusScreen_() {
+        var today = new Date()
+        wishStatusYear_ = today.getFullYear()
+        wishStatusMonth_ = today.getMonth() + 1
+        wishStatusPeriod_ = today.getDate() <= 15 ? 'first_half' : 'second_half'
+
+        setupWishStatusYearMonthSelects_()
+        updateWishStatusPeriodToggleUi_()
+        loadWishStatus_()
+      }
+
+      function setupWishStatusYearMonthSelects_() {
+        var yearSelect = document.getElementById('wish_status_year_select')
+        yearSelect.innerHTML = ''
+        for (var y = wishStatusYear_ - 1; y <= wishStatusYear_ + 1; y++) {
+          var yOpt = document.createElement('option')
+          yOpt.value = String(y)
+          yOpt.textContent = y + '年'
+          yearSelect.appendChild(yOpt)
+        }
+        yearSelect.value = String(wishStatusYear_)
+
+        var monthSelect = document.getElementById('wish_status_month_select')
+        monthSelect.innerHTML = ''
+        for (var m = 1; m <= 12; m++) {
+          var mOpt = document.createElement('option')
+          mOpt.value = String(m)
+          mOpt.textContent = m + '月'
+          monthSelect.appendChild(mOpt)
+        }
+        monthSelect.value = String(wishStatusMonth_)
+      }
+
+      function updateWishStatusPeriodToggleUi_() {
+        var firstBtn = document.getElementById('wish_status_period_first_btn')
+        var secondBtn = document.getElementById('wish_status_period_second_btn')
+        firstBtn.classList.toggle('is-selected', wishStatusPeriod_ === 'first_half')
+        secondBtn.classList.toggle('is-selected', wishStatusPeriod_ === 'second_half')
+        firstBtn.setAttribute('aria-pressed', wishStatusPeriod_ === 'first_half' ? 'true' : 'false')
+        secondBtn.setAttribute('aria-pressed', wishStatusPeriod_ === 'second_half' ? 'true' : 'false')
+      }
+
+      function updateWishStatusMessage_(message) {
+        document.getElementById('wish_status_message').textContent = message
+      }
+
+      function handleWishStatusPeriodInputChange_() {
+        wishStatusYear_ = Number(document.getElementById('wish_status_year_select').value)
+        wishStatusMonth_ = Number(document.getElementById('wish_status_month_select').value)
+        loadWishStatus_()
+      }
+
+      function handleWishStatusPeriodChange_(period) {
+        wishStatusPeriod_ = period
+        updateWishStatusPeriodToggleUi_()
+        loadWishStatus_()
+      }
+
+      /**
+       *  対象期間の提出状況をサーバーから取得し直す。取得中・通信失敗時は集計・一覧カードを隠し、
+       *  古い結果を最新として残さない。期間切替を連続操作しても、古いレスポンスが新しい選択を
+       *  上書きしないようリクエスト連番で確認する（js_employee_wish.htmlのloadWishPeriodData_と同じ考え方）
+       *
+       *  再読み込みボタン（レビュー対応 2026-09-22、指摘2）:
+       *    通信失敗時・success:false時だけ表示し、正常取得・従業員0人では表示しない。
+       *    読み込み開始時（この関数の先頭）に必ず一度hiddenへ戻すため、古いリクエストの
+       *    成功・失敗コールバックが表示状態を書き換えても、その後の新しいloadWishStatus_呼び出しで
+       *    必ず上書きされる。押下時はretryWishStatusLoad_からこの関数を再実行するだけで、
+       *    現在選択中の年月・期間（wishStatusYear_/Month_/Period_）は変更しない
+       */
+      function loadWishStatus_() {
+        var summaryCard = document.getElementById('wish_status_summary_card')
+        var listCard = document.getElementById('wish_status_list_card')
+        summaryCard.hidden = true
+        listCard.hidden = true
+        document.getElementById('wish_status_retry_btn').hidden = true
+
+        wishStatusRequestSequence_++
+        var requestId = wishStatusRequestSequence_
+        updateWishStatusMessage_('読み込み中...')
+
+        google.script.run
+          .withSuccessHandler(function (result) {
+            if (requestId !== wishStatusRequestSequence_) return
+            if (!result.success) {
+              updateWishStatusMessage_(result.message)
+              document.getElementById('wish_status_retry_btn').hidden = false
+              return
+            }
+            if (result.employees.length === 0) {
+              updateWishStatusMessage_('従業員が登録されていません')
+              return
+            }
+            updateWishStatusMessage_('')
+            renderWishStatusCounts_(result)
+            renderWishStatusEmployeeList_(result)
+            summaryCard.hidden = false
+            listCard.hidden = false
+          })
+          .withFailureHandler(function (error) {
+            if (requestId !== wishStatusRequestSequence_) return
+            updateWishStatusMessage_('提出状況の取得に失敗しました: ' + error.message)
+            document.getElementById('wish_status_retry_btn').hidden = false
+          })
+          .getEmployeeWishSubmissionStatus(wishStatusYear_, wishStatusMonth_, wishStatusPeriod_)
+      }
+
+      /**
+       *  再読み込みボタンの押下ハンドラ。現在選択中の年月・期間を変えず、loadWishStatus_を
+       *  呼び直すだけ（ページ全体の再読み込み・location操作は行わない。保存・更新・削除処理も追加しない）
+       */
+      function retryWishStatusLoad_() {
+        loadWishStatus_()
+      }
+
+      /**
+       *  上部の集計（提出済み・一部提出・未提出・要確認）を描画する。
+       *  要確認人数はデータ競合がある場合のみ表示する（最小仕様の表示内容どおり）。
+       *  「期限後あり」は表示しない（最小仕様5. レビュー対応 2026-09-22：期限内・期限後の回答が
+       *  同じ従業員に混在すると、従業員単位の表示だけでは対象日が分からず店主の判断を曖昧にするため。
+       *  I列の期限後フラグ・日別シフト画面の薄い赤表示はこの画面の外に残る＝ここでは削除しない）
+       */
+      function renderWishStatusCounts_(result) {
+        var countsEl = document.getElementById('wish_status_counts')
+        while (countsEl.firstChild) countsEl.removeChild(countsEl.firstChild)
+
+        var items = [
+          { label: '提出済み', value: result.counts.complete },
+          { label: '一部提出', value: result.counts.partial },
+          { label: '未提出', value: result.counts.none }
+        ]
+        if (result.counts.conflict > 0) {
+          items.push({ label: '要確認', value: result.counts.conflict })
+        }
+
+        for (var i = 0; i < items.length; i++) {
+          var dt = document.createElement('dt')
+          dt.className = 'wish-status-counts__label'
+          dt.textContent = items[i].label
+          var dd = document.createElement('dd')
+          dd.className = 'wish-status-counts__value'
+          dd.textContent = String(items[i].value) + '人'
+          countsEl.appendChild(dt)
+          countsEl.appendChild(dd)
+        }
+      }
+
+      /**
+       *  従業員別の状況一覧を描画する。並び順（要確認→未提出→一部提出→提出済み、同じ状態内は
+       *  freee従業員一覧の順）はサーバー側ですでに確定しているため、ここでは受け取った順に描画するだけ。
+       *  色だけを状態の手掛かりにしないよう、状態文言・回答日数・未回答日数を必ずテキストで示す
+       */
+      function renderWishStatusEmployeeList_(result) {
+        var list = document.getElementById('wish_status_employee_list')
+        while (list.firstChild) list.removeChild(list.firstChild)
+
+        for (var i = 0; i < result.employees.length; i++) {
+          var emp = result.employees[i]
+
+          var row = document.createElement('div')
+          row.className = 'wish-status-row wish-status-row--' + emp.status
+
+          var nameEl = document.createElement('span')
+          nameEl.className = 'wish-status-row__name'
+          nameEl.textContent = emp.employee_name
+          row.appendChild(nameEl)
+
+          var statusEl = document.createElement('span')
+          statusEl.className = 'wish-status-row__status'
+          statusEl.textContent = WISH_STATUS_LABELS_[emp.status] || emp.status
+          row.appendChild(statusEl)
+
+          var countEl = document.createElement('span')
+          countEl.className = 'wish-status-row__count'
+          countEl.textContent = emp.answered_day_count + '/' + emp.target_day_count + '日'
+          row.appendChild(countEl)
+
+          var remainingEl = document.createElement('span')
+          remainingEl.className = 'wish-status-row__remaining'
+          remainingEl.textContent = '残り' + emp.remaining_day_count + '日'
+          row.appendChild(remainingEl)
+
+          // 期限後ありバッジは表示しない（最小仕様5. レビュー対応 2026-09-22）。
+          // emp.has_late_submissionはサーバーから受け取るが、この画面では描画に使わない
+
+          list.appendChild(row)
+        }
+      }
+</script>

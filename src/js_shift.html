@@ -1,0 +1,882 @@
+<script>
+
+      /**
+       *  シフト予定の登録ボタンクリック時に発火（「直接シフトを登録」モーダル内のフォーム）
+       */
+      function handleShiftFormSubmit(formObject) {
+        updateShiftMessage('登録中...')
+        google.script.run
+          .withSuccessHandler(function (message) {
+            updateShiftMessage(message)
+            // postShiftEntryの成功文言は「登録しました」（通常追加）と
+            // 「既存シフトとつなげて…登録しました」（隣接結合）の2種類があるため、
+            // 完全一致ではなく「登録しました」を含むかで判定する。入力エラー・重複エラーは含まない
+            if (message.indexOf('登録しました') !== -1) {
+              closeShiftDirectAddModal_()
+              refreshTimeline()
+              clearJudgeResults()
+            }
+          })
+          .withFailureHandler(function (error) {
+            updateShiftMessage('エラー: ' + error.message)
+          })
+          .postShiftEntry(formObject)
+        return false
+      }
+
+      /**
+       *  「直接シフトを登録」モーダルを開く。対象営業日表示・従業員技能カードは既存の
+       *  syncNavDisplay/updateEmployeeSkillCard_をそのまま使う（DOM位置が変わっただけでIDは同じ）
+       */
+      function openShiftDirectAddModal_() {
+        document.getElementById('shiftForm').reset()
+        updateShiftMessage('')
+        updateEmployeeSkillCard_('')
+        resetShiftSkillToggle_()
+        syncNavDisplay()
+        document.getElementById('shift_direct_add_modal').hidden = false
+        document.getElementById('shift_employee_select').focus()
+      }
+
+      function closeShiftDirectAddModal_() {
+        document.getElementById('shift_direct_add_modal').hidden = true
+      }
+
+      /**
+       *  マイスター詳細（employee_skill_card）の開閉状態だけをリセットする（常に閉じた状態に戻す）。
+       *  レビュー対応（マイスター詳細の折りたたみ 2026-09-16）：従業員選択後にマイスター情報が
+       *  展開されるとモーダルが縦長になり、下部の登録ボタンが見えづらくなる問題への対応。
+       *  従業員の選び直し・モーダルの再表示のたびに呼び出す。選択中の従業員・入力中の時刻には
+       *  一切触れない（開閉のリセットと入力状態のリセットを混同しない） */
+      function resetShiftSkillToggle_() {
+        var toggleBtn = document.getElementById('shift_skill_toggle_btn')
+        var card = document.getElementById('employee_skill_card')
+        toggleBtn.setAttribute('aria-expanded', 'false')
+        toggleBtn.textContent = 'マイスター情報を見る'
+        card.hidden = true
+      }
+
+      /**
+       *  「マイスター情報を見る」ボタンのクリックで開閉する。type="button"のためフォーム送信は
+       *  発生しない。キーボード操作（Enter/Space）もbutton要素の標準動作でそのまま開閉できる */
+      function toggleShiftSkillCard_() {
+        var toggleBtn = document.getElementById('shift_skill_toggle_btn')
+        var card = document.getElementById('employee_skill_card')
+        var willOpen = card.hidden
+        card.hidden = !willOpen
+        toggleBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false')
+        toggleBtn.textContent = willOpen ? 'マイスター情報を閉じる' : 'マイスター情報を見る'
+      }
+
+      function handleShiftDirectAddOverlayClick_(event) {
+        if (event.target.id === 'shift_direct_add_modal') closeShiftDirectAddModal_()
+      }
+
+      function clearSkillCard_(card) {
+        while (card.firstChild) {
+          card.removeChild(card.firstChild)
+        }
+      }
+
+      function addSkillCardText_(card, text, className) {
+        var p = document.createElement('p')
+        if (className) p.className = className
+        p.textContent = text
+        card.appendChild(p)
+      }
+
+      /**
+       *  シフト登録フォームの従業員selectのchangeで発火。ページ表示時に1回だけ取得したmaisterSummariesを
+       *  参照するだけで、選択のたびにgoogle.script.runでは通信しない
+       */
+      function handleShiftEmployeeChange(selectEl) {
+        updateEmployeeSkillCard_(selectEl.value)
+        resetShiftSkillToggle_()
+      }
+
+      /**
+       *  選択した従業員の取得マイスターを、フォーム内の補足カードへ表示する
+       *  未選択・登録済み（技能あり/なし）・マイスターマスタ未登録・概要データ取得不可の状態を扱う
+       *  表示内容はすべてtextContent／createElementで組み立て、innerHTMLへは何も入れない
+       *  レビュー対応（9月25日提出版_合計スコア表示の削除）：技能点（summary.score）は
+       *  内部計算としてmaisterSummariesに残っているが、店主の判断材料としては使わないため、
+       *  このカードには表示しない
+       *  レビュー対応（マイスター詳細の重複表示解消 2026-09-24）：従業員名は上部の従業員選択欄に
+       *  既に表示されているため、この詳細カード内では表示しない（skill-card__name段落を削除）。
+       *  「取得マイスター」の見出し・技能ラベル・未登録／0件／取得失敗時の案内はそのまま残す
+       */
+      function updateEmployeeSkillCard_(empId) {
+        var card = document.getElementById('employee_skill_card')
+        var toggleBtn = document.getElementById('shift_skill_toggle_btn')
+        clearSkillCard_(card)
+
+        if (!empId) {
+          // 表示するマイスター情報自体がないため、詳細card・開閉ボタンの両方を隠す
+          // （closeShiftDirectAddModal_/openShiftDirectAddModal_側のresetShiftSkillToggle_が
+          // card.hiddenをtrueに戻すのと別に、ここでは「ボタンごと出さない」判断を担う）
+          addSkillCardText_(card, '従業員を選択すると、取得マイスターが表示されます', 'skill-card__guide')
+          toggleBtn.hidden = true
+          return
+        }
+        toggleBtn.hidden = false
+
+        if (!maisterSummaries || typeof maisterSummaries !== 'object') {
+          // 想定外にマイスター概要が取得できていない場合。フォーム自体は使えるようにし、ここだけ案内を出す
+          addSkillCardText_(card, '技能情報を取得できませんでした。画面を再読み込みしてください', 'skill-card__empty')
+          return
+        }
+
+        var summary = Object.prototype.hasOwnProperty.call(maisterSummaries, String(empId))
+          ? maisterSummaries[String(empId)]
+          : null
+
+        // 1. マイスターマスタに対象従業員の行がない（=未登録）場合。registeredで判定する
+        if (!summary || !summary.registered) {
+          addSkillCardText_(card, 'マイスター情報が登録されていません', 'skill-card__empty')
+          addSkillCardText_(card, 'マイスター管理から登録してください', 'skill-card__hint')
+          return
+        }
+
+        // 2. 行はある（登録済み）が、取得済みマイスターが0件の場合。未登録とは別の表示にする
+        if (summary.acquired_meisters.length === 0) {
+          addSkillCardText_(card, '取得済みマイスターはありません', 'skill-card__empty')
+          addSkillCardText_(card, 'マイスター管理から登録・更新できます', 'skill-card__hint')
+          return
+        }
+
+        // 3. 取得済みマイスターが1件以上の場合（従来どおりの表示）
+        var tagsLabel = document.createElement('p')
+        tagsLabel.className = 'skill-card__label'
+        tagsLabel.textContent = '取得マイスター'
+        card.appendChild(tagsLabel)
+
+        var tagList = document.createElement('div')
+        tagList.className = 'skill-tag-list'
+        for (var t = 0; t < summary.acquired_meisters.length; t++) {
+          var tag = document.createElement('span')
+          tag.className = 'skill-tag'
+          tag.textContent = summary.acquired_meisters[t]
+          tagList.appendChild(tag)
+        }
+        card.appendChild(tagList)
+      }
+
+      /**
+       *  時間軸の時刻ラベル行を描画する（11〜23、翌0〜翌2の16列）
+       */
+      function renderTimelineHeader() {
+        var track = document.getElementById('timeline_header_track')
+        track.innerHTML = ''
+        var labels = ['11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '翌0', '翌1', '翌2']
+        for (var i = 0; i < labels.length; i++) {
+          var div = document.createElement('div')
+          div.className = 'timeline-hour-label'
+          div.textContent = labels[i]
+          track.appendChild(div)
+        }
+      }
+
+      var timelinePendingShiftEntries_ = null // refreshTimeline実行中、勤務取得結果が届くまでnull
+      var timelinePendingWishEntries_ = null // refreshTimeline実行中、希望取得結果が届くまでnull
+
+      /**
+       *  勤務・希望の両方の通信結果がそろった時点で1回だけrenderEmployeeRowsを呼ぶ
+       *  （どちらか一方が先に返っても、もう一方を待つ。requestId・requestedBusinessDateによる
+       *  「最新の通信か」「現在選択中の日付と一致するか」の判定は、呼び出し元で個別に行ってから
+       *  このトップレベル関数を呼ぶ。トップレベルに置くのは、他のクライアント関数と同じ
+       *  6スペースインデントの宣言規約に揃え、ファイル分割の無変更性テストが関数単位で
+       *  比較できるようにするため）
+       */
+      function renderIfBothTimelineResultsReady_() {
+        if (timelinePendingShiftEntries_ === null || timelinePendingWishEntries_ === null) return
+        var displayedCount = renderEmployeeRows(timelinePendingShiftEntries_, timelinePendingWishEntries_)
+        // 通信中・通信失敗のメッセージ（updateTimelineMessageの他の呼び出し）と混同しないよう、
+        // 両方の通信が成功して描画できた場合だけ、ここで0人案内の表示・解除を行う
+        updateTimelineMessage(displayedCount === 0 ? 'この営業日に希望または勤務があるスタッフはいません。「直接シフトを登録」から登録できます。' : '')
+      }
+
+      /**
+       *  選択中の営業日のシフトと希望シフトを取得して時間軸を再描画する
+       *  日付切替の連打・通信失敗時に古い日付の表示が残らないよう、通信開始時点で連番と対象日を保存し、
+       *  結果が返った時点で「最新の通信か」「現在選択中の日付と一致するか」の両方を満たす場合だけ描画する。
+       *  勤務・希望は別々のgoogle.script.run呼び出しになるため、両方そろってから1回だけ描画する
+       */
+      function refreshTimeline() {
+        timelineRequestSequence++
+        var requestId = timelineRequestSequence
+        var requestedBusinessDate = formatDateInputValue_(currentBusinessDate)
+
+        document.getElementById('timeline_body').innerHTML = ''
+        updateTimelineMessage('読み込み中...')
+        timelinePendingShiftEntries_ = null
+        timelinePendingWishEntries_ = null
+
+        google.script.run
+          .withSuccessHandler(function (entries) {
+            if (requestId !== timelineRequestSequence) return
+            if (requestedBusinessDate !== formatDateInputValue_(currentBusinessDate)) return
+            timelinePendingShiftEntries_ = entries
+            renderIfBothTimelineResultsReady_()
+          })
+          .withFailureHandler(function (error) {
+            if (requestId !== timelineRequestSequence) return // 古い通信のエラーでは現在の画面を上書きしない
+            if (requestedBusinessDate !== formatDateInputValue_(currentBusinessDate)) return
+            updateTimelineMessage('時間軸の取得に失敗しました: ' + error.message)
+          })
+          .getShiftEntriesForBusinessDate(requestedBusinessDate)
+
+        google.script.run
+          .withSuccessHandler(function (wishes) {
+            if (requestId !== timelineRequestSequence) return
+            if (requestedBusinessDate !== formatDateInputValue_(currentBusinessDate)) return
+            timelinePendingWishEntries_ = wishes
+            renderIfBothTimelineResultsReady_()
+          })
+          .withFailureHandler(function (error) {
+            if (requestId !== timelineRequestSequence) return
+            if (requestedBusinessDate !== formatDateInputValue_(currentBusinessDate)) return
+            updateTimelineMessage('希望シフトの取得に失敗しました: ' + error.message)
+          })
+          .getShiftWishesForBusinessDate(requestedBusinessDate)
+      }
+
+      /**
+       *  選択中の営業日について、希望シフトまたは勤務シフトのどちらか一方でもある従業員をtrueにした
+       *  マップを返す（従業員IDの文字列をキーにする。timeline-bar側のdataset.employeeId等と同じ
+       *  「文字列化したID」で揃え、比較の際にString/Number差で不一致にならないようにする）。
+       *  希望なしで直接登録した勤務（entriesByEmployee側）もここでtrueになる
+       */
+      function buildEmployeeHasEntryMap_(entriesByEmployee, wishesByEmployee) {
+        var hasEntry = {}
+        for (var empId in entriesByEmployee) {
+          if ((entriesByEmployee[empId] || []).length > 0) hasEntry[empId] = true
+        }
+        for (var wishEmpId in wishesByEmployee) {
+          if ((wishesByEmployee[wishEmpId] || []).length > 0) hasEntry[wishEmpId] = true
+        }
+        return hasEntry
+      }
+
+      /**
+       *  表に表示する従業員だけを絞った配列を作る（レビュー対応：表示対象と登録対象を分け、
+       *  表の情報量を減らす 2026-09-16）。選択営業日に希望または勤務シフトがある人だけを残し、
+       *  どちらもない人は表から外す。残った人はemployeesの元の並び順（freeeの並び順）を維持する
+       *  （店主画面では行の移動が次の登録操作を遅らせるため、開始時刻順等への並べ替えはしない）。
+       *  employees自体は書き換えず、新しい配列を作って返す（従業員の元データを破壊的に変更しない）。
+       *  「直接シフトを登録」の従業員選択（shift_employee_select）はサーバー側テンプレートで
+       *  employees全件から独立して生成しているため、この絞り込みの影響を受けない＝
+       *  表から消えた人も直接登録では引き続き選べる。
+       *  行順が変わっても従業員IDとバー・編集対象の対応はemp.idで紐付くため崩れない
+       */
+      function buildDisplayedEmployees_(hasEntryMap) {
+        var displayed = []
+        for (var i = 0; i < employees.length; i++) {
+          var emp = employees[i]
+          if (hasEntryMap[String(emp.id)]) displayed.push(emp)
+        }
+        return displayed
+      }
+
+      /**
+       *  従業員別の行（名前＋シフトバー＋希望バー）を描画する。表示対象は
+       *  buildDisplayedEmployees_で「選択営業日に希望または勤務がある人」だけに絞ったものを使う
+       *  （表示対象はemployees＝freeeの並び順のまま。絞り込みだけで開始時刻順等への並べ替えはしない）。
+       *  希望バー（薄色）は未登録の希望シフトだけをサーバー側で返す（登録済みの希望はここに含まれない
+       *  ＝希望バー全体を自動的に隠せる。未使用部分だけを残す表示はサーバー側でも行わないため、
+       *  希望の一部だけを勤務にした場合もその希望バーは表示されない）。
+       *  戻り値は実際に描画した従業員数（呼び出し元が0人案内の表示要否を判定するために使う）
+       */
+      function renderEmployeeRows(shiftEntries, wishEntries) {
+        var body = document.getElementById('timeline_body')
+        body.innerHTML = ''
+        var entriesByEmployee = {}
+        for (var i = 0; i < shiftEntries.length; i++) {
+          var e = shiftEntries[i]
+          if (!entriesByEmployee[e.employee_id]) entriesByEmployee[e.employee_id] = []
+          entriesByEmployee[e.employee_id].push(e)
+        }
+        var wishesByEmployee = {}
+        for (var wi = 0; wi < (wishEntries || []).length; wi++) {
+          var w = wishEntries[wi]
+          if (!wishesByEmployee[w.employee_id]) wishesByEmployee[w.employee_id] = []
+          wishesByEmployee[w.employee_id].push(w)
+        }
+        var displayEmployees = buildDisplayedEmployees_(buildEmployeeHasEntryMap_(entriesByEmployee, wishesByEmployee))
+        for (var j = 0; j < displayEmployees.length; j++) {
+          var emp = displayEmployees[j]
+          var row = document.createElement('div')
+          row.className = 'timeline-row timeline-employee-row'
+
+          var nameCell = document.createElement('div')
+          nameCell.className = 'timeline-name'
+          nameCell.textContent = emp.display_name
+          row.appendChild(nameCell)
+
+          var track = document.createElement('div')
+          track.className = 'timeline-track'
+
+          var wishes = wishesByEmployee[String(emp.id)] || []
+          for (var wk = 0; wk < wishes.length; wk++) {
+            var wish = wishes[wk]
+            var wishBar = document.createElement('button')
+            wishBar.type = 'button'
+            // レビュー対応（従業員希望シフト一括提出 2026-09-21）：締切後に新規提出・変更された
+            // 時間希望だけを薄い赤にする（wish.after_deadlineはshift_wish.gs
+            // getShiftWishesForBusinessDateが希望シート側の期限後フラグ（I列）をそのまま返す値。
+            // 表示時刻から再計算しない）。文言は変えず、既存の「希望」＋時刻表記のまま
+            // （バーへ「期限後」という文字は足さない。並び順・優先順位も変えない＝
+            // クラス付与以外は既存のバー構築処理と同じ）
+            wishBar.className = 'timeline-bar timeline-bar--wish' + (wish.after_deadline ? ' timeline-bar--wish-overdue' : '')
+            wishBar.style.left = (wish.offset_minutes / 960 * 100) + '%'
+            wishBar.style.width = (wish.display_minutes / 960 * 100) + '%'
+            var wishLabel = wish.start_label + '〜' + wish.end_label
+            wishBar.textContent = '希望 ' + wishLabel
+            wishBar.title = '希望 ' + wishLabel
+            wishBar.setAttribute('aria-label', emp.display_name + ' 希望' + wishLabel + 'から勤務を登録')
+            wishBar.dataset.wishId = wish.wish_id
+            wishBar.dataset.employeeId = wish.employee_id
+            wishBar.dataset.employeeName = emp.display_name
+            wishBar.dataset.startMs = wish.start_ms
+            wishBar.dataset.endMs = wish.end_ms
+            wishBar.dataset.startLabel = wish.start_label
+            wishBar.dataset.endLabel = wish.end_label
+            wishBar.addEventListener('click', handleShiftWishBarClick_)
+            track.appendChild(wishBar)
+          }
+
+          var entries = entriesByEmployee[String(emp.id)] || []
+          for (var k = 0; k < entries.length; k++) {
+            var entry = entries[k]
+            var bar = document.createElement('button')
+            bar.type = 'button'
+            bar.className = 'timeline-bar'
+            bar.style.left = (entry.offset_minutes / 960 * 100) + '%'
+            bar.style.width = (entry.display_minutes / 960 * 100) + '%'
+            var label = entry.start_label + '〜' + entry.end_label
+            bar.textContent = label
+            bar.title = label
+            bar.setAttribute('aria-label', emp.display_name + ' ' + label + 'の変更または削除')
+            // ループ変数をクロージャで直接参照すると最後の要素の値になってしまうため、
+            // クリック時に必要な情報はdata属性としてボタン自身に持たせ、クリック時にevent.currentTargetから読む
+            bar.dataset.sourceRow = entry.source_row
+            bar.dataset.employeeId = entry.employee_id
+            bar.dataset.startMs = entry.start_ms
+            bar.dataset.endMs = entry.end_ms
+            bar.dataset.employeeName = emp.display_name
+            bar.dataset.shiftLabel = label
+            bar.dataset.wishId = entry.wish_id || ''
+            bar.addEventListener('click', handleShiftBarClick_)
+            track.appendChild(bar)
+          }
+          row.appendChild(track)
+          body.appendChild(row)
+        }
+        return displayEmployees.length
+      }
+
+      var shiftEditContext = null // 変更・削除モーダルで編集中のシフト情報 { source_row, employee_id, start_ms, end_ms }
+      var shiftEditTriggerEl = null // モーダルを開いたシフトバー（button）要素。閉じる際にここへフォーカスを戻す
+      var shiftEditRequestInProgress = false // 更新・削除通信中の連打・多重操作を防ぐ
+
+      /**
+       *  ミリ秒時刻をtime input用の"HH:MM"にする（日付部分は無視し、時刻だけを表示する）
+       */
+      function msToTimeInputValue_(ms) {
+        var d = new Date(Number(ms))
+        return pad2_(d.getHours()) + ':' + pad2_(d.getMinutes())
+      }
+
+      function setShiftEditButtonsDisabled_(disabled) {
+        document.getElementById('shift_edit_save_btn').disabled = disabled
+        document.getElementById('shift_edit_delete_btn').disabled = disabled
+        document.getElementById('shift_edit_cancel_btn').disabled = disabled
+      }
+
+      function updateShiftEditModalMessage_(message) {
+        document.getElementById('shift_edit_modal_message').textContent = message
+      }
+
+      /**
+       *  モーダル内の一時表示（従業員名・対象日・時刻・メッセージ）を空にする
+       *  閉じたあとに前回の対象者・時刻が残ったまま次に開かれることがないようにする
+       */
+      function clearShiftEditModalFields_() {
+        document.getElementById('shift_edit_modal_employee').textContent = ''
+        document.getElementById('shift_edit_modal_date').textContent = ''
+        document.getElementById('shift_edit_start_time').value = ''
+        document.getElementById('shift_edit_end_time').value = ''
+        document.getElementById('shift_edit_modal_wish_field').hidden = true
+        document.getElementById('shift_edit_modal_wish_range').textContent = ''
+        clearShiftEditSkillTags_()
+        updateShiftEditModalMessage_('')
+      }
+
+      /**
+       *  従業員名の下のマイスターラベル表示（実幅計測・開閉・リサイズ追従）は、シフトの変更・削除
+       *  モーダル（shift_edit_modal）と希望シフトモーダル（shift_wish_modal）の両方で使う共通処理
+       *  （レビュー対応：希望シフトから勤務を登録するモーダルにもマイスターラベルを追加したい
+       *  2026-09-16）。2モーダル分の要素IDをハードコードで重複させず、混線も避けるため、
+       *  DOM要素ID一式・状態の保持先をSkillTagUI_インスタンスへまとめ、モーダルごとに1つずつ
+       *  独立したインスタンスを持つ（shiftEditSkillTagUI_・shiftWishSkillTagUI_、それぞれのcreate
+       *  関数はopenShiftEditModal_・handleShiftWishBarClick_の中で1回だけ呼ばれる想定）。
+       *  各インスタンスは自分専用の要素・シフトEditSkillMeisters相当の状態・リサイズリスナー参照を
+       *  個別に持つため、片方の開閉やリサイズがもう片方の表示・状態に影響しない。
+       */
+      function createSkillTagUI_(ids) {
+        return {
+          ids: ids,
+          meisters: null,
+          resizeHandler: null,
+          expanded: false
+        }
+      }
+
+      /**
+       *  レビュー対応（展開表示の重複解消 2026-09-16、従業員名の下へマイスターラベルを配置
+       *  2026-09-21）：別行の「全マイスター」（detailList・detailField）は廃止し、名前の下の
+       *  ラベル行（wrapField）内のラベル列（inlineList）1つだけで折りたたみ・展開の両方を表す。
+       *  clearSkillTags_はui.expandedもfalseへ戻す（別の従業員を開いたときに前回の展開状態が
+       *  残らないようにする）。マイスター情報がない場合に不要な空行を残さないよう、
+       *  ラベル行自体（wrapField）もここでhiddenにしておく（renderSkillTags_が実際に
+       *  ラベルを追加する場合だけ、その後でhidden=falseに戻す） */
+      function clearSkillTags_(ui) {
+        var inlineList = document.getElementById(ui.ids.inlineList)
+        var moreBtn = document.getElementById(ui.ids.moreBtn)
+        var wrapField = document.getElementById(ui.ids.wrapField)
+        while (inlineList.firstChild) inlineList.removeChild(inlineList.firstChild)
+        moreBtn.hidden = true
+        moreBtn.textContent = ''
+        moreBtn.setAttribute('aria-expanded', 'false')
+        inlineList.classList.remove('skill-tag-list--expanded')
+        wrapField.classList.remove('modal-field--skill-row-expanded')
+        wrapField.hidden = true
+        ui.meisters = null
+        ui.expanded = false
+      }
+
+      function createSkillTagEl_(text) {
+        var tag = document.createElement('span')
+        tag.className = 'skill-tag'
+        tag.textContent = text
+        return tag
+      }
+
+      /**
+       *  モーダルの従業員名の下に、取得マイスターのラベルを表示する
+       *  （レビュー対応：従業員名の下にマイスターラベルを表示したい 2026-09-21。
+       *  元は名前と同じ行に表示していたが、名前とラベルが横幅を奪い合い、氏名が不自然に
+       *  改行される問題があったため、氏名の下の別行へ移した）。
+       *  未登録・取得0件・情報取得不可のときはラベルを出さない（取得マイスターがない場合は
+       *  ラベル行自体を出さない。技能情報を表示できないことだけで変更・削除／勤務登録操作を
+       *  妨げてはいけないため、これらの場合もモーダル自体は通常どおり開いたまま進める。
+       *  ラベル行自体もclearSkillTags_でhiddenのままとなり、不要な空行を残さない）。
+       *  常に折りたたみ状態（ui.expanded = false）から始め、実際に収まる分だけを
+       *  recalculateSkillInlineVisibility_で計算・反映する（レビュー対応：固定件数では
+       *  なく実際の利用可能幅に収まる分だけを常時表示する 2026-09-16）
+       */
+      function renderSkillTags_(ui, empId) {
+        clearSkillTags_(ui)
+        if (!maisterSummaries || typeof maisterSummaries !== 'object') return
+
+        var summary = Object.prototype.hasOwnProperty.call(maisterSummaries, String(empId))
+          ? maisterSummaries[String(empId)]
+          : null
+        if (!summary || !summary.registered) return
+        if (!summary.acquired_meisters || summary.acquired_meisters.length === 0) return
+
+        ui.meisters = summary.acquired_meisters
+        document.getElementById(ui.ids.wrapField).hidden = false
+        recalculateSkillInlineVisibility_(ui)
+      }
+
+      /**
+       *  名前の下のラベル行（ui.ids.inlineList）に、実際に利用可能な幅へ収まる分だけ
+       *  マイスターラベルを表示し直す（レビュー対応：固定3件／1件では「収まる分だけ」
+       *  という仕様を満たさない 2026-09-16。さらに、当初の実装は同じ行に並べていた名前と
+       *  幅を奪い合い、氏名が不自然に改行される問題があったため、氏名の下の別行
+       *  （.modal-field--skill-row）へ移した 2026-09-21）。
+       *
+       *  計測方法：ラベル列・「＋N件」ボタンは同じ行（.modal-field--skill-row）に並んでいる。
+       *  この行自体はflex-wrap: nowrapに固定し、「＋N件」ボタンはflex: 0 0 autoで常に自分の
+       *  サイズを保つ。ラベル列（.skill-tag-list--inline）はflex-shrink可能（min-width: 0まで）で、
+       *  「＋N件」ボタン分を除いた残り幅に収まる。ラベル列はoverflow: hiddenのため、内容
+       *  （タグの合計幅）が多くてもこの要素自身の幅は「割り当てられた残り幅」を超えて広がらない。
+       *  この構成により、行自体が別行へ落ちることも、ラベル列の幅が内容量に押し広げられることもなく、
+       *  getBoundingClientRect().rightで安定して「実際の利用可能幅」を測れる。
+       *
+       *  レビュー対応（ボタンの幅計測手順の修正 2026-09-21）：以前はまず「＋N件」ボタンを
+       *  表示した状態で計測していたため、「ボタンなしなら全件収まる」ケースでもボタン分の
+       *  幅を差し引いた残り幅で計測してしまい、実際には不要な「＋N件」を出していた。
+       *  修正：まずボタンをhidden=trueにした状態（ボタンが行の幅を圧迫しない状態）で全件が
+       *  収まるかを計測する。全件収まればボタンはhiddenのまま確定して終える。収まらない
+       *  場合だけボタンをhidden=falseにし、ボタン分の幅が減った状態で改めて計測し直し、
+       *  そこで収まる件数・隠れる件数を確定する（ボタンの表示自体が利用可能幅を変える
+       *  という前提を、2段階の計測で正しく反映する）
+       *
+       *  この関数は「折りたたみ表示・幅の再計算」専用（レビュー対応：展開表示の重複解消
+       *  2026-09-16）。ui.expanded=trueの間（展開中）は呼び出し元（リサイズハンドラ）が
+       *  そもそも再計算をスキップするため、展開中にこの関数が呼ばれて意図せず折りたたまれる
+       *  ことはない（「展開中のリサイズで意図せず折りたたまない」という要件に対応）。
+       *  ここではその前提を防御的にも保証するため、呼ばれた場合は常に折りたたみ状態へ戻す。
+       *
+       *  非表示中の幅計測に注意：呼び出し元（openShiftEditModal_・handleShiftWishBarClick_）は
+       *  モーダルをhidden=falseにしてからrenderSkillTags_を呼ぶため、計測時点でモーダル自体は
+       *  必ず表示されている（hidden要素のoffsetWidthは常に0になり、全件を「収まらない」と
+       *  誤判定するため、この呼び出し順を維持する必要がある）
+       */
+      function recalculateSkillInlineVisibility_(ui) {
+        if (!ui.meisters) return
+        var inlineList = document.getElementById(ui.ids.inlineList)
+        var moreBtn = document.getElementById(ui.ids.moreBtn)
+        var wrapField = document.getElementById(ui.ids.wrapField)
+        var meisters = ui.meisters
+
+        ui.expanded = false
+        inlineList.classList.remove('skill-tag-list--expanded')
+        wrapField.classList.remove('modal-field--skill-row-expanded')
+        moreBtn.setAttribute('aria-expanded', 'false')
+
+        while (inlineList.firstChild) inlineList.removeChild(inlineList.firstChild)
+        var tags = []
+        for (var i = 0; i < meisters.length; i++) {
+          var tag = createSkillTagEl_(meisters[i])
+          inlineList.appendChild(tag)
+          tags.push(tag)
+        }
+
+        // 1段階目：「＋N件」ボタンをhiddenにした状態（ボタンが行の幅を圧迫しない状態）で
+        // 全件が収まるかを計測する
+        moreBtn.hidden = true
+        moreBtn.textContent = ''
+        var visibleCount = measureVisibleSkillTagCount_(inlineList, tags)
+
+        if (visibleCount >= tags.length) {
+          // ボタンなしで全件収まる：ボタンはhiddenのまま確定する
+          for (var a = 0; a < tags.length; a++) tags[a].hidden = false
+          return
+        }
+
+        // 2段階目：全件は収まらないため、ボタンを表示した状態（ボタン分の幅が減った状態）で
+        // 改めて計測し直し、収まる件数・隠れる件数を確定する
+        moreBtn.hidden = false
+        moreBtn.textContent = '＋' + meisters.length + '件'
+        visibleCount = measureVisibleSkillTagCount_(inlineList, tags)
+
+        // 1件も収まらない場合（visibleCount === 0）でも、下段には何も表示できないだけで、
+        // 「＋N件」から全件を確認できる状態はそのまま維持される
+        for (var j = 0; j < tags.length; j++) {
+          tags[j].hidden = j >= visibleCount
+        }
+
+        var hiddenCount = meisters.length - visibleCount
+        moreBtn.textContent = '＋' + hiddenCount + '件'
+      }
+
+      /**
+       *  inlineList（ラベル列）の現在の状態（＋N件ボタンの表示有無を反映した幅）で、
+       *  先頭から何件のタグが1行に収まるかを計測する。計測中だけ折り返しを止める
+       *  （css.htmlの.skill-tag-list--measuring参照）。これがないと、幅が足りないタグが
+       *  2行目へ折り返されてしまい、1行目の右端を超えないため「収まっている」と誤判定する
+       */
+      function measureVisibleSkillTagCount_(inlineList, tags) {
+        inlineList.classList.add('skill-tag-list--measuring')
+        var containerRight = inlineList.getBoundingClientRect().right
+        var visibleCount = 0
+        for (var t = 0; t < tags.length; t++) {
+          var tagRect = tags[t].getBoundingClientRect()
+          if (tagRect.right <= containerRight + 0.5) {
+            visibleCount++
+          } else {
+            break
+          }
+        }
+        inlineList.classList.remove('skill-tag-list--measuring')
+        return visibleCount
+      }
+
+      /**
+       *  「＋N件」ボタンで、ラベル行（inlineList）自体を折りたたみ・展開する
+       *  （レビュー対応：展開表示の重複解消 2026-09-16。以前は別行の「全マイスター」
+       *  （detailField・detailList）へ全件を再表示していたため、常時表示分と重複していた。
+       *  展開時は同じinlineListへ隠れていた分を追加し、各ラベルを1回だけ表示する。
+       *  折り返しはCSS側（.skill-tag-list--expanded・.modal-field--skill-row-expanded、
+       *  それぞれoverflow: visible・flex-wrap: wrap）で許可する）。
+       *
+       *  展開→折りたたみへ戻す際は、その時点の幅でrecalculateSkillInlineVisibility_を
+       *  呼び直し、表示件数・残り件数を再計算する（「折りたたむと、その時点の幅で表示件数と
+       *  残り件数を再計算する」という要件に対応。全件収まる場合は「＋N件」を表示しない）
+       */
+      function toggleSkillDetail_(ui) {
+        if (!ui.meisters) return
+        var inlineList = document.getElementById(ui.ids.inlineList)
+        var moreBtn = document.getElementById(ui.ids.moreBtn)
+        var wrapField = document.getElementById(ui.ids.wrapField)
+
+        if (ui.expanded) {
+          // 展開中→折りたたむ：その時点の幅で再計算する（再計算自体がexpanded=falseへ戻し、
+          // クラスも外すため、ここでは呼ぶだけでよい）
+          recalculateSkillInlineVisibility_(ui)
+          return
+        }
+
+        // 折りたたみ中→展開する：隠れていたタグのhiddenを外し、全件を1回だけ表示する
+        // （タグ要素自体はrecalculateSkillInlineVisibility_で既に全件分がinlineList内に
+        // 存在しており、収まらない分がhiddenになっているだけなので、作り直さずhiddenを
+        // 外すだけで重複なく全件表示できる）
+        ui.expanded = true
+        var tags = inlineList.children
+        for (var i = 0; i < tags.length; i++) {
+          tags[i].hidden = false
+        }
+        inlineList.classList.add('skill-tag-list--expanded')
+        wrapField.classList.add('modal-field--skill-row-expanded')
+        moreBtn.textContent = '折りたたむ'
+        moreBtn.setAttribute('aria-expanded', 'true')
+      }
+
+      // window.resizeのハンドラ参照。open時に1回だけ登録し、close時に確実にremoveEventListenerする
+      // （レビュー対応：再表示のたびのイベント登録重複に注意 2026-09-16。モーダルを開くたびに
+      // 新しい関数を作ってaddEventListenerすると、閉じずに開き直した場合や、このハンドラ自体の
+      // 参照を保持し忘れた場合に、同じイベントへ複数回登録され、1回のリサイズで再計算が
+      // 何度も走ってしまう）。ハンドラ参照はui.resizeHandlerとしてSkillTagUI_インスタンスごとに
+      // 個別に持つため、2つのモーダルのリサイズ監視が互いのハンドラを上書き・解除することはない。
+      // レビュー対応（展開中のリサイズで意図せず折りたたまない 2026-09-16）：ui.expandedが
+      // trueの間はrecalculateSkillInlineVisibility_自体を呼ばない（呼ぶと強制的に折りたたみへ
+      // 戻ってしまうため）。展開中は全件を折り返し表示しているだけなので、幅が変わっても
+      // 再計測は不要（CSS側のflex-wrap: wrapが自動で折り返し直す） */
+      function startSkillResizeWatch_(ui) {
+        stopSkillResizeWatch_(ui)
+        ui.resizeHandler = function () {
+          if (ui.expanded) return
+          recalculateSkillInlineVisibility_(ui)
+        }
+        window.addEventListener('resize', ui.resizeHandler)
+      }
+
+      function stopSkillResizeWatch_(ui) {
+        if (ui.resizeHandler) {
+          window.removeEventListener('resize', ui.resizeHandler)
+          ui.resizeHandler = null
+        }
+      }
+
+      // ---- シフトの変更・削除モーダル（shift_edit_modal）用のラッパー ----
+      // 既存の呼び出し元（openShiftEditModal_・closeShiftEditModal_・toggleShiftEditSkillDetail_の
+      // onclick等）をそのまま使えるよう、関数名・呼び出し方は変更せずSkillTagUI_の薄いラッパーにする
+
+      var shiftEditSkillTagUI_ = createSkillTagUI_({
+        inlineList: 'shift_edit_modal_skill_tags',
+        moreBtn: 'shift_edit_skill_more_btn',
+        wrapField: 'shift_edit_modal_skill_wrap'
+      })
+
+      function clearShiftEditSkillTags_() {
+        clearSkillTags_(shiftEditSkillTagUI_)
+      }
+
+      function renderShiftEditSkillTags_(empId) {
+        renderSkillTags_(shiftEditSkillTagUI_, empId)
+      }
+
+      function recalculateShiftEditSkillInlineVisibility_() {
+        recalculateSkillInlineVisibility_(shiftEditSkillTagUI_)
+      }
+
+      function toggleShiftEditSkillDetail_() {
+        toggleSkillDetail_(shiftEditSkillTagUI_)
+      }
+
+      function startShiftEditSkillResizeWatch_() {
+        startSkillResizeWatch_(shiftEditSkillTagUI_)
+      }
+
+      function stopShiftEditSkillResizeWatch_() {
+        stopSkillResizeWatch_(shiftEditSkillTagUI_)
+      }
+
+      /**
+       *  「シフトの変更・削除」モーダルを開く。開始・終了時刻は現在値をtime inputへ初期表示し、
+       *  開始時刻へフォーカスする。triggerElは呼び出し元のシフトバー（閉じる際にフォーカスを戻す先）
+       *  希望シフトから登録した勤務（entry.wish_idがある）の場合は、元の希望時間をgetShiftWishDisplayByIdで
+       *  取得して参考表示する（変更できる時間は元の希望範囲内に限られることをサーバー側でも検証する）
+       */
+      function openShiftEditModal_(entry, employeeName, triggerEl) {
+        shiftEditContext = entry
+        shiftEditTriggerEl = triggerEl
+        document.getElementById('shift_edit_modal_employee').textContent = employeeName
+        document.getElementById('shift_edit_modal_date').textContent = formatBusinessDateHeaderLabel_(currentBusinessDate)
+        var startInput = document.getElementById('shift_edit_start_time')
+        startInput.value = msToTimeInputValue_(entry.start_ms)
+        document.getElementById('shift_edit_end_time').value = msToTimeInputValue_(entry.end_ms)
+        updateShiftEditModalMessage_('')
+        setShiftEditButtonsDisabled_(false)
+        // モーダルを表示してからラベルを組み立てる（レビュー対応：非表示中の幅計測に注意
+        // 2026-09-16。recalculateShiftEditSkillInlineVisibility_はgetBoundingClientRect()で
+        // 実際の幅を測るため、hidden状態のままだと常に0を返し全件「収まらない」と
+        // 誤判定してしまう。表示 → ラベル組み立て・幅計測 → リサイズ監視開始の順で行う） */
+        document.getElementById('shift_edit_modal').hidden = false
+        // 別の従業員のモーダルを開いたときに前の従業員のラベル・展開状態が残らないよう、
+        // renderShiftEditSkillTags_の冒頭でclearShiftEditSkillTags_により毎回リセットしてから組み立てる
+        renderShiftEditSkillTags_(entry.employee_id)
+        startShiftEditSkillResizeWatch_()
+
+        var wishField = document.getElementById('shift_edit_modal_wish_field')
+        if (entry.wish_id) {
+          wishField.hidden = false
+          document.getElementById('shift_edit_modal_wish_range').textContent = '取得中...'
+          google.script.run
+            .withSuccessHandler(function (wish) {
+              if (!wish) return
+              document.getElementById('shift_edit_modal_wish_range').textContent = wish.start_label + '〜' + wish.end_label
+            })
+            .withFailureHandler(function () {
+              document.getElementById('shift_edit_modal_wish_range').textContent = '取得できませんでした'
+            })
+            .getShiftWishDisplayById(entry.wish_id)
+        } else {
+          wishField.hidden = true
+        }
+
+        startInput.focus()
+      }
+
+      /**
+       *  モーダルを閉じる。通信中は閉じない（多重更新・多重削除防止と同じ理由で、通信結果を待つ）
+       *  一時表示をクリアし、モーダルを開いた元のシフトバーへフォーカスを戻す
+       *  （保存・削除成功時は直後にrefreshTimeline()で時間軸が再描画されるため、
+       *  元のバー要素自体が入れ替わりフォーカスが失われる場合がある。キャンセル・Esc・
+       *  外側クリックのように画面を変更せず閉じる場合は、常に元のバーへ戻る）
+       *
+       *  レビュー対応（フォーカス復帰の回帰 2026-09-16）:
+       *    app_sidebar.htmlはモーダルのhidden属性の変化をMutationObserverで監視し、非同期に
+       *    .app-shellのinertを解除する。hidden=trueを設定した直後に同期的にfocus()を呼ぶと、
+       *    MutationObserverのコールバックがまだ実行されておらず.app-shellがinertのままのため、
+       *    背景（サイドバー側）にあるtriggerElへのfocus()が拒否され、フォーカスが失われる。
+       *    setTimeoutで先送りにする代わりに、syncAppShellInertForModal_（app_sidebar.html側の
+       *    関数）をここで同期的に呼び、非同期のMutationObserverを待たずにinertの状態を
+       *    最新化してからfocus()する。他のモーダルがまだ開いていれば、この関数は
+       *    inertを維持したまま何もしない（isAnyAppModalOpen_で他モーダルの有無を見るため）
+       */
+      function closeShiftEditModal_() {
+        if (shiftEditRequestInProgress) return
+        document.getElementById('shift_edit_modal').hidden = true
+        // モーダルを閉じるたびにリサイズ監視を止める（レビュー対応：再表示のたびのイベント登録
+        // 重複に注意 2026-09-16。次にopenShiftEditModal_を呼んだときにstartShiftEditSkillResizeWatch_
+        // 側でも重複防止しているが、開いていない間はそもそも監視自体が不要なため、閉じた時点で確実に止める） */
+        stopShiftEditSkillResizeWatch_()
+        clearShiftEditModalFields_()
+        shiftEditContext = null
+        if (typeof syncAppShellInertForModal_ === 'function') syncAppShellInertForModal_()
+        if (shiftEditTriggerEl) {
+          shiftEditTriggerEl.focus()
+          shiftEditTriggerEl = null
+        }
+      }
+
+      /**
+       *  モーダルのオーバーレイ自身をクリックした場合だけ閉じる（モーダル本体のクリックでは閉じない）
+       */
+      function handleShiftEditOverlayClick_(event) {
+        if (event.target.id === 'shift_edit_modal') closeShiftEditModal_()
+      }
+
+      /**
+       *  シフトバー（button）のクリックから、変更・削除モーダルを開く
+       *  data属性から対象シフトの情報を取り出す（renderEmployeeRows側の説明を参照）
+       */
+      function handleShiftBarClick_(event) {
+        var bar = event.currentTarget
+        openShiftEditModal_({
+          source_row: bar.dataset.sourceRow,
+          employee_id: bar.dataset.employeeId,
+          start_ms: bar.dataset.startMs,
+          end_ms: bar.dataset.endMs,
+          wish_id: bar.dataset.wishId || ''
+        }, bar.dataset.employeeName, bar)
+      }
+
+      /**
+       *  モーダルの「変更を保存」。updateShiftEntryへ通信し、成功時だけモーダルを閉じて
+       *  時間軸を再取得・判定結果をクリアする。失敗時はモーダルを開いたまま入力値とエラーを残す
+       */
+      function handleShiftEditSave_() {
+        if (!shiftEditContext || shiftEditRequestInProgress) return
+        var startTime = document.getElementById('shift_edit_start_time').value
+        var endTime = document.getElementById('shift_edit_end_time').value
+        if (!startTime || !endTime) {
+          updateShiftEditModalMessage_('開始・終了時刻を入力してください')
+          return
+        }
+
+        shiftEditRequestInProgress = true
+        setShiftEditButtonsDisabled_(true)
+        updateShiftEditModalMessage_('保存中...')
+
+        google.script.run
+          .withSuccessHandler(function (result) {
+            shiftEditRequestInProgress = false
+            setShiftEditButtonsDisabled_(false)
+            if (result.success) {
+              closeShiftEditModal_()
+              updateShiftMessage(result.message)
+              refreshTimeline()
+              clearJudgeResults()
+            } else {
+              updateShiftEditModalMessage_(result.message)
+            }
+          })
+          .withFailureHandler(function (error) {
+            shiftEditRequestInProgress = false
+            setShiftEditButtonsDisabled_(false)
+            updateShiftEditModalMessage_('変更に失敗しました: ' + error.message)
+          })
+          .updateShiftEntry({
+            source_row: shiftEditContext.source_row,
+            employee_id: shiftEditContext.employee_id,
+            start_ms: shiftEditContext.start_ms,
+            end_ms: shiftEditContext.end_ms,
+            business_date: formatDateInputValue_(currentBusinessDate),
+            start_time: startTime,
+            end_time: endTime
+          })
+      }
+
+      /**
+       *  モーダルの「削除」。危険操作のため実行前にwindow.confirmで最終確認する
+       *  削除は既存のdeleteShiftEntry（source_row・employee_id・start_ms・end_msの一致確認）をそのまま呼ぶ
+       */
+      function handleShiftEditDelete_() {
+        if (!shiftEditContext || shiftEditRequestInProgress) return
+        var confirmed = window.confirm('このシフトを削除します。よろしいですか？')
+        if (!confirmed) return
+
+        shiftEditRequestInProgress = true
+        setShiftEditButtonsDisabled_(true)
+        updateShiftEditModalMessage_('削除中...')
+
+        google.script.run
+          .withSuccessHandler(function (result) {
+            shiftEditRequestInProgress = false
+            setShiftEditButtonsDisabled_(false)
+            if (result.success) {
+              closeShiftEditModal_()
+              updateShiftMessage(result.message)
+              refreshTimeline()
+              clearJudgeResults()
+            } else {
+              updateShiftEditModalMessage_(result.message)
+            }
+          })
+          .withFailureHandler(function (error) {
+            shiftEditRequestInProgress = false
+            setShiftEditButtonsDisabled_(false)
+            updateShiftEditModalMessage_('削除に失敗しました: ' + error.message)
+          })
+          .deleteShiftEntry({
+            source_row: shiftEditContext.source_row,
+            employee_id: shiftEditContext.employee_id,
+            start_ms: shiftEditContext.start_ms,
+            end_ms: shiftEditContext.end_ms
+          })
+      }
+</script>
